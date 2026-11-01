@@ -1,0 +1,75 @@
+# ==============================================================================
+# MigrateLift WordPress Plugin - .gitignore
+# ==============================================================================
+
+# Node / JavaScript dependencies
+node_modules/
+.npm/
+
+# Build artifacts & compiled assets
+# Compiled from src/ via `@wordpress/scripts` (`npm run build`).
+# (Keep ignored to prevent source map/bundle churn; comment out only if deploying via git without a build step)
+build/
+*.map
+
+# Distribution & release packages (generated via `npm run plugin-zip`)
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Composer / PHP dependencies
+vendor/
+composer.phar
+
+# Logs & debugging
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Test & coverage artifacts
+coverage/
+.nyc_output/
+.phpunit.result.cache
+.phpcs-cache
+
+# Environment variables & local configuration
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Runtime backups & temporary files
+migrate-lift-files/
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# IDE & Editor files
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sublime-project
+*.sublime-workspace
+
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
