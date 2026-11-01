@@ -1,0 +1,8 @@
+import { Path, SVG } from '@wordpress/primitives';
+
+export default (
+	<SVG xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" style={ { fill: "none" } } stroke="currentColor" strokeWidth="1.5">
+		<Path d="M13.25 6.5V5.25C13.25 4.97386 13.0261 4.75 12.75 4.75H5.25C4.97386 4.75 4.75 4.97386 4.75 5.25V13.0086C4.75 13.0977 4.85771 13.1423 4.92071 13.0793L7 11H8.5" />
+		<Path d="M14.25 17L10.75 13L14.25 9M10.75 13H17.25C20.25 13 20.5 15.8 20.5 19" />
+	</SVG>
+);
