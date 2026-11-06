@@ -37,8 +37,6 @@ A lightweight WordPress migration, backup, and restore plugin featuring a modern
 ├── package.json                          # NPM scripts and dependencies (@wordpress/scripts)
 ├── bin/
 │   └── lint-php.js                       # Cross-platform PHP syntax validation runner
-├── .distignore                           # Files excluded from distribution zip
-├── .gitattributes                        # Release export rules
 ├── readme.txt                            # Standard WordPress.org plugin readme
 ├── build/
 │   ├── index.js                          # Compiled React production bundle
@@ -47,9 +45,6 @@ A lightweight WordPress migration, backup, and restore plugin featuring a modern
 │   ├── index.js                          # Entry point mounting React into #migrate-lift-admin-root
 │   ├── App.js                            # Main tabbed view (Export, Import, Archives, Tools)
 │   ├── components/
-│   │   ├── ExportCard.js                 # Export site component
-│   │   ├── ImportCard.js                 # Import with FormFileUpload & Modal
-│   │   ├── ArchivesList.js               # Server archives list
 │   │   └── CleanTemporary.js             # Cleanup tools
 │   └── utils/
 │       └── api.js                        # AJAX & chunked upload handlers
@@ -64,6 +59,8 @@ A lightweight WordPress migration, backup, and restore plugin featuring a modern
 ```
 
 ## Development & Publishing Commands
+
+> **Fresh clones must be built before use.** `build/` is not tracked in git, and the plugin loads its admin screens from it at runtime. Run `npm install && npm run build` after cloning, and `npm run build` again after pulling changes to `src/`.
 
 - **Install dependencies:**
   ```bash

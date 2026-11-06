@@ -6,13 +6,12 @@
 node_modules/
 .npm/
 
-# Build artifacts & compiled assets
-# Compiled from src/ via `@wordpress/scripts` (`npm run build`).
-# (Keep ignored to prevent source map/bundle churn; comment out only if deploying via git without a build step)
-build/
+# Compiled assets: regenerate from src/ with `npm run build`.
+# The plugin needs build/ at runtime, so a fresh clone must be built before use.
+/build/
 *.map
 
-# Distribution & release packages (generated via `npm run plugin-zip`)
+# Release packages (generated via `npm run plugin-zip`)
 *.zip
 *.tar
 *.tar.gz
@@ -24,52 +23,50 @@ composer.phar
 
 # Logs & debugging
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
 
-# Test & coverage artifacts
+# Test, lint & coverage caches
 coverage/
 .nyc_output/
+.phpunit.cache/
 .phpunit.result.cache
 .phpcs-cache
+.eslintcache
+.stylelintcache
+.cache/
 
 # Environment variables & local configuration
 .env
-.env.local
-.env.*.local
+.env.*
 !.env.example
 
-# Runtime backups & temporary files
+# Runtime backups, database dumps & temporary files
 migrate-lift-files/
+*.sql
+*.sql.gz
 *.tmp
 *.bak
+*.orig
 *.swp
 *.swo
+*~
 
-# IDE & Editor files
+# IDE, editor & agent files
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
 .idea/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
 *.sublime-project
 *.sublime-workspace
+.claude/settings.local.json
 
-# Operating System files
+# Operating system files
 .DS_Store
-.DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
 ehthumbs.db
 Thumbs.db
 desktop.ini
-
+$RECYCLE.BIN/
