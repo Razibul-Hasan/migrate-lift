@@ -130,7 +130,7 @@ class Migrate_Lift_Import_Engine {
 				$test_url,
 				array(
 					'timeout'     => 5,
-					'sslverify'   => false,
+					'sslverify'   => apply_filters( 'migrate_lift_ssl_verify', true ),
 					'redirection' => 0,
 				)
 			);
@@ -140,7 +140,7 @@ class Migrate_Lift_Import_Engine {
 				$body        = wp_remote_retrieve_body( $response );
 				if ( 200 === $status_code && false !== strpos( $body, $canary_content ) ) {
 					$exposed = true;
-					$warning = __( 'Your web server serves files from the storage directory directly over HTTP. Apache .htaccess deny rules are ignored (common on Nginx or LiteSpeed). Please configure your server to deny public access to wp-content/migrate-lift-files/.', 'migrate-lift' );
+					$warning = __( 'Your web server serves files from the storage directory directly over HTTP. Apache .htaccess deny rules are ignored (common on Nginx, LiteSpeed or IIS). Please configure your server to deny public access to wp-content/migrate-lift-files/.', 'migrate-lift' );
 				}
 			}
 		}
@@ -524,7 +524,7 @@ class Migrate_Lift_Import_Engine {
 			);
 		}
 
-		$free_space = function_exists( 'disk_free_space' ) ? @disk_free_space( constant( 'WP_CONTENT_DIR' ) ) : false;
+		$free_space = function_exists( 'disk_free_space' ) ? @disk_free_space( migrate_lift_content_dir() ) : false;
 		if ( $free_space && $total_uncompressed > 0 && $free_space < ( $total_uncompressed * 1.25 ) ) {
 			$report['warnings'][] = sprintf(
 				/* translators: 1: Available disk space, 2: Archive uncompressed size. */

@@ -173,151 +173,130 @@ function migrate_lift_post( $key ) {
 }
 
 // Export AJAX
-foreach ( array( 'wp_ajax_migrate_lift_export' ) as $action ) {
-	add_action(
-		$action,
-		function () {
-			migrate_lift_ajax(
-				function () {
-					return migrate_lift_export_step( migrate_lift_post( 'step' ) );
-				}
-			);
-		}
-	);
-}
+add_action(
+	'wp_ajax_migrate_lift_export',
+	function () {
+		migrate_lift_ajax(
+			function () {
+				return migrate_lift_export_step( migrate_lift_post( 'step' ) );
+			}
+		);
+	}
+);
 
 // Import Info AJAX
-foreach ( array( 'wp_ajax_migrate_lift_import_info' ) as $action ) {
-	add_action(
-		$action,
-		function () {
-			migrate_lift_ajax(
-				function () {
-					return migrate_lift_import_info( migrate_lift_post( 'file' ) );
-				}
-			);
-		}
-	);
-}
+add_action(
+	'wp_ajax_migrate_lift_import_info',
+	function () {
+		migrate_lift_ajax(
+			function () {
+				return migrate_lift_import_info( migrate_lift_post( 'file' ) );
+			}
+		);
+	}
+);
 
 // Import AJAX
-foreach ( array( 'wp_ajax_migrate_lift_import' ) as $action ) {
-	add_action(
-		$action,
-		function () {
-			migrate_lift_ajax(
-				function () {
-					return migrate_lift_import_step( migrate_lift_post( 'step' ), migrate_lift_post( 'file' ), '1' === migrate_lift_post( 'delete_after' ) );
-				}
-			);
-		}
-	);
-}
+add_action(
+	'wp_ajax_migrate_lift_import',
+	function () {
+		migrate_lift_ajax(
+			function () {
+				return migrate_lift_import_step( migrate_lift_post( 'step' ), migrate_lift_post( 'file' ), '1' === migrate_lift_post( 'delete_after' ) );
+			}
+		);
+	}
+);
 
 // Cleanup AJAX (After the swap the old login is gone, so cleanup is open to anyone holding the import token).
-foreach ( array( 'wp_ajax_migrate_lift_cleanup', 'wp_ajax_nopriv_migrate_lift_cleanup' ) as $action ) {
-	add_action(
-		$action,
+function migrate_lift_ajax_cleanup() {
+	migrate_lift_ajax(
 		function () {
-			migrate_lift_ajax(
-				function () {
-					return migrate_lift_cleanup_step( migrate_lift_post( 'token' ) );
-				},
-				true
-			);
-		}
+			return migrate_lift_cleanup_step( migrate_lift_post( 'token' ) );
+		},
+		true
 	);
 }
+add_action( 'wp_ajax_migrate_lift_cleanup', 'migrate_lift_ajax_cleanup' );
+add_action( 'wp_ajax_nopriv_migrate_lift_cleanup', 'migrate_lift_ajax_cleanup' );
 
 // Clean temporary AJAX
-foreach ( array( 'wp_ajax_migrate_lift_clean' ) as $action ) {
-	add_action(
-		$action,
-		function () {
-			migrate_lift_ajax( 'migrate_lift_clean_step' );
-		}
-	);
-}
+add_action(
+	'wp_ajax_migrate_lift_clean',
+	function () {
+		migrate_lift_ajax( 'migrate_lift_clean_step' );
+	}
+);
 
 // List archives AJAX
-foreach ( array( 'wp_ajax_migrate_lift_list' ) as $action ) {
-	add_action(
-		$action,
-		function () {
-			migrate_lift_ajax( 'migrate_lift_archives' );
-		}
-	);
-}
+add_action(
+	'wp_ajax_migrate_lift_list',
+	function () {
+		migrate_lift_ajax( 'migrate_lift_archives' );
+	}
+);
 
 // Delete archive AJAX
-foreach ( array( 'wp_ajax_migrate_lift_delete' ) as $action ) {
-	add_action(
-		$action,
-		function () {
-			migrate_lift_ajax(
-				function () {
-					$file = sanitize_file_name( migrate_lift_post( 'file' ) );
-					if ( function_exists( 'migrate_lift_archive_is_protected' ) && migrate_lift_archive_is_protected( $file ) ) {
-						throw new Exception( esc_html__( 'Cannot delete this archive because it is designated as a protected recovery point.', 'migrate-lift' ) );
-					}
-					$path = migrate_lift_archive_path( $file );
-					if ( file_exists( $path ) ) {
-						wp_delete_file( $path );
-					}
-					return migrate_lift_archives();
+add_action(
+	'wp_ajax_migrate_lift_delete',
+	function () {
+		migrate_lift_ajax(
+			function () {
+				$file = sanitize_file_name( migrate_lift_post( 'file' ) );
+				if ( function_exists( 'migrate_lift_archive_is_protected' ) && migrate_lift_archive_is_protected( $file ) ) {
+					throw new Exception( esc_html__( 'Cannot delete this archive because it is designated as a protected recovery point.', 'migrate-lift' ) );
 				}
-			);
-		}
-	);
-}
+				$path = migrate_lift_archive_path( $file );
+				if ( file_exists( $path ) ) {
+					wp_delete_file( $path );
+				}
+				return migrate_lift_archives();
+			}
+		);
+	}
+);
 
 // Upload chunk AJAX
-foreach ( array( 'wp_ajax_migrate_lift_upload' ) as $action ) {
-	add_action(
-		$action,
-		function () {
-			migrate_lift_ajax( 'migrate_lift_upload_chunk' );
-		}
-	);
-}
+add_action(
+	'wp_ajax_migrate_lift_upload',
+	function () {
+		migrate_lift_ajax( 'migrate_lift_upload_chunk' );
+	}
+);
 
 // Upload status AJAX
-foreach ( array( 'wp_ajax_migrate_lift_upload_status' ) as $action ) {
-	add_action(
-		$action,
-		function () {
-			migrate_lift_ajax(
-				function () {
-					$part = migrate_lift_dir( migrate_lift_upload_name() . '.part' );
-					clearstatcache();
-					return array( 'size' => file_exists( $part ) ? filesize( $part ) : 0 );
-				}
-			);
-		}
-	);
-}
+add_action(
+	'wp_ajax_migrate_lift_upload_status',
+	function () {
+		migrate_lift_ajax(
+			function () {
+				$part = migrate_lift_dir( migrate_lift_upload_name() . '.part' );
+				clearstatcache();
+				return array( 'size' => file_exists( $part ) ? filesize( $part ) : 0 );
+			}
+		);
+	}
+);
 
 // Upload cancel AJAX
-foreach ( array( 'wp_ajax_migrate_lift_upload_cancel' ) as $action ) {
-	add_action(
-		$action,
-		function () {
-			migrate_lift_ajax(
-				function () {
-					$name = migrate_lift_upload_name();
-					$part = migrate_lift_dir( $name . '.part' );
-					if ( file_exists( $part ) ) {
-						wp_delete_file( $part );
-					}
-					if ( class_exists( 'Migrate_Lift_Import_Engine' ) ) {
-						Migrate_Lift_Import_Engine::cancel_upload( $name );
-					}
-					return array( 'cancelled' => true );
+add_action(
+	'wp_ajax_migrate_lift_upload_cancel',
+	function () {
+		migrate_lift_ajax(
+			function () {
+				$name = migrate_lift_upload_name();
+				$part = migrate_lift_dir( $name . '.part' );
+				if ( file_exists( $part ) ) {
+					wp_delete_file( $part );
 				}
-			);
-		}
-	);
-}
+				if ( class_exists( 'Migrate_Lift_Import_Engine' ) ) {
+					Migrate_Lift_Import_Engine::cancel_upload( $name );
+				}
+				return array( 'cancelled' => true );
+			}
+		);
+	}
+);
 
 /**
  * The uploaded archive's file name, validated.
@@ -339,21 +318,24 @@ function migrate_lift_upload_name() {
  */
 function migrate_lift_upload_chunk() {
 	$name = migrate_lift_upload_name();
-	// phpcs:ignore WordPress.Security.NonceVerification.Missing,WordPress.Security.ValidatedSanitizedInput
-	$chunk = isset( $_FILES['chunk'] ) ? $_FILES['chunk'] : null;
-	if ( ! $chunk || UPLOAD_ERR_OK !== $chunk['error'] || ! is_uploaded_file( $chunk['tmp_name'] ) ) {
-		throw new Exception( 'The upload failed (PHP upload error ' . ( $chunk ? (int) $chunk['error'] : 'none' ) . ').' );
+	// The nonce is checked in migrate_lift_ajax(). The temporary path comes from PHP and must stay byte-exact for is_uploaded_file().
+	// phpcs:ignore WordPress.Security.NonceVerification.Missing, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
+	$chunk_tmp   = isset( $_FILES['chunk']['tmp_name'] ) ? (string) $_FILES['chunk']['tmp_name'] : '';
+	$chunk_error = isset( $_FILES['chunk']['error'] ) ? absint( $_FILES['chunk']['error'] ) : UPLOAD_ERR_NO_FILE; // phpcs:ignore WordPress.Security.NonceVerification.Missing
+	$chunk_size  = isset( $_FILES['chunk']['size'] ) ? absint( $_FILES['chunk']['size'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Missing
+	if ( UPLOAD_ERR_OK !== $chunk_error || ! is_uploaded_file( $chunk_tmp ) ) {
+		throw new Exception( 'The upload failed (PHP upload error ' . (int) $chunk_error . ').' );
 	}
 
 	$part   = migrate_lift_dir( $name . '.part' );
 	$offset = (int) migrate_lift_post( 'offset' );
 	$total  = (int) migrate_lift_post( 'total' );
-	$length = (int) $chunk['size'];
+	$length = $chunk_size;
 	clearstatcache();
 	$have = 0 === $offset ? 0 : ( file_exists( $part ) ? filesize( $part ) : 0 );
 
 	if ( $have === $offset ) {
-		$data = file_get_contents( $chunk['tmp_name'] );
+		$data = file_get_contents( $chunk_tmp );
 		if ( false === file_put_contents( $part, $data, 0 === $offset ? 0 : FILE_APPEND ) ) {
 			throw new Exception( 'Could not save the upload. Is the disk full?' );
 		}

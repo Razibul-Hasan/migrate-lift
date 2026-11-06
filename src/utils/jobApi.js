@@ -1,5 +1,5 @@
 /**
- * REST API client for MigrateLift Job Engine and Activity Logging (Part 04).
+ * REST API client for MigrateLift Job Engine and Activity Logging.
  */
 
 const getCfg = () => ( typeof window !== 'undefined' && window.migrateLift ) || {};
@@ -22,7 +22,12 @@ function getHeaders() {
 
 async function request( path, method = 'GET', body = null ) {
 	const base = getRestBase().replace( /\/?$/, '/' );
-	const url = `${ base }${ path.replace( /^\//, '' ) }`;
+	let cleanPath = path.replace( /^\//, '' );
+	// With plain permalinks the base already has a query string (?rest_route=...).
+	if ( base.includes( '?' ) ) {
+		cleanPath = cleanPath.replace( '?', '&' );
+	}
+	const url = `${ base }${ cleanPath }`;
 
 	const options = {
 		method,

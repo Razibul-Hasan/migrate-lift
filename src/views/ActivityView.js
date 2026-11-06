@@ -1,6 +1,6 @@
 /**
  * ActivityView Component
- * Integrated Job Engine activity audit trail and verification panel (Part 04).
+ * Integrated Job Engine activity audit trail and verification panel.
  */
 
 import { useState, useEffect, useCallback, useRef } from '@wordpress/element';

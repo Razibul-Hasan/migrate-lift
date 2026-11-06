@@ -1,5 +1,5 @@
 /**
- * MigrateView Component (Parts 13, 14, 15)
+ * MigrateView Component
  *
  * Implements the guided server-to-server migration screen featuring
  * cryptographic site pairing, resumable direct HTTPS transfer, and the 7-step migration wizard.

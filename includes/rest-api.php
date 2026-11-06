@@ -109,17 +109,6 @@ function migrate_lift_register_rest_routes() {
 		)
 	);
 
-	// POST /migrate-lift/v1/import
-	register_rest_route(
-		$namespace,
-		'/import',
-		array(
-			'methods'             => WP_REST_Server::CREATABLE,
-			'callback'            => 'migrate_lift_rest_import',
-			'permission_callback' => $admin_permission,
-		)
-	);
-
 	// POST /migrate-lift/v1/cleanup
 	register_rest_route(
 		$namespace,
@@ -587,8 +576,15 @@ function migrate_lift_register_rest_routes() {
 		'/restore/checkpoint',
 		array(
 			'methods'             => WP_REST_Server::CREATABLE,
-			'callback'            => 'migrate_lift_rest_restore_create_checkpoint',
+			'callback'            => 'migrate_lift_rest_checkpoint_step',
 			'permission_callback' => $admin_permission,
+			'args'                => array(
+				'job_id' => array(
+					'required'          => false,
+					'type'              => 'string',
+					'sanitize_callback' => 'sanitize_key',
+				),
+			),
 		)
 	);
 
@@ -661,10 +657,13 @@ function migrate_lift_register_rest_routes() {
 		if ( ! class_exists( 'Migrate_Lift_Site_Pairing' ) ) {
 			return new WP_Error( 'pairing_missing', __( 'Site pairing module is not available.', 'migrate-lift' ), array( 'status' => 500 ) );
 		}
+		if ( is_multisite() ) {
+			return new WP_Error( 'multisite_unsupported', __( 'Multisite is not supported.', 'migrate-lift' ), array( 'status' => 403 ) );
+		}
 		return Migrate_Lift_Site_Pairing::verify_request_signature( $request );
 	};
 
-	// --- Site Pairing Routes (Part 13) ---
+	// --- Site Pairing Routes ---
 	register_rest_route(
 		$namespace,
 		'/pair/token',
@@ -766,7 +765,7 @@ function migrate_lift_register_rest_routes() {
 		)
 	);
 
-	// Admin relay routes to paired destination (Part 15)
+	// Admin relay routes to paired destination
 	register_rest_route(
 		$namespace,
 		'/pair/remote-preflight',
@@ -828,7 +827,24 @@ function migrate_lift_register_rest_routes() {
 		)
 	);
 
-	// --- Direct Transfer Routes (Part 14) ---
+	register_rest_route(
+		$namespace,
+		'/pair/remote-checkpoint',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'migrate_lift_rest_pair_remote_checkpoint',
+			'permission_callback' => $admin_permission,
+			'args'                => array(
+				'pair_id' => array(
+					'required'          => true,
+					'type'              => 'string',
+					'sanitize_callback' => 'sanitize_key',
+				),
+			),
+		)
+	);
+
+	// --- Direct Transfer Routes ---
 	register_rest_route(
 		$namespace,
 		'/transfer/start',
@@ -915,7 +931,27 @@ function migrate_lift_register_rest_routes() {
 		)
 	);
 
-	// --- Remote Preflight, Diff, Apply Routes (Part 15) ---
+	register_rest_route(
+		$namespace,
+		'/transfer/abort',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'migrate_lift_rest_transfer_abort',
+			'permission_callback' => $signed_permission,
+		)
+	);
+
+	register_rest_route(
+		$namespace,
+		'/remote/checkpoint',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'migrate_lift_rest_checkpoint_step',
+			'permission_callback' => $signed_permission,
+		)
+	);
+
+	// --- Remote Preflight, Diff, Apply Routes ---
 	register_rest_route(
 		$namespace,
 		'/remote/preflight',
@@ -1354,22 +1390,6 @@ function migrate_lift_rest_export( $request ) {
 }
 
 /**
- * Handles import step via REST.
- * Gated in Part 10: destructive replacement is locked until preflight passes,
- * recovery checkpoint exists, and replacement engines are implemented in Parts 11 & 12.
- *
- * @param WP_REST_Request $request Request.
- * @return WP_REST_Response|WP_Error
- */
-function migrate_lift_rest_import( $request ) {
-	return new WP_Error(
-		'destructive_restore_locked',
-		__( 'Destructive site replacement is disabled in this phase. Use the Restore Wizard to perform preflight checks and create a verified recovery checkpoint snapshot before enabling replacement modules (Parts 11 & 12).', 'migrate-lift' ),
-		array( 'status' => 403 )
-	);
-}
-
-/**
  * Handles cleanup step via REST.
  *
  * @param WP_REST_Request $request Request.
@@ -1447,20 +1467,16 @@ function migrate_lift_rest_get_jobs( $request ) {
  */
 function migrate_lift_rest_create_job( $request ) {
 	$kind            = sanitize_key( (string) $request->get_param( 'kind' ) );
-	$params          = $request->get_param( 'params' );
+	$params          = migrate_lift_sanitize_job_params( $request->get_param( 'params' ) );
 	$idempotency_key = sanitize_text_field( (string) $request->get_param( 'idempotency_key' ) );
 
-	if ( ! is_array( $params ) ) {
-		$params = array();
-	}
-
 	// Supported job kinds in this version.
-	$allowed_kinds = array( 'test_job', 'backup' );
+	$allowed_kinds = array( 'backup' );
 	if ( ! in_array( $kind, $allowed_kinds, true ) ) {
 		return new WP_Error(
 			'job_kind_not_allowed',
 			/* translators: %s: Job kind. */
-			sprintf( __( 'Job kind "%s" is not enabled in this version. Test jobs and backup jobs are supported.', 'migrate-lift' ), $kind ),
+			sprintf( __( 'Job kind "%s" is not enabled in this version.', 'migrate-lift' ), $kind ),
 			array( 'status' => 400 )
 		);
 	}
@@ -1470,6 +1486,17 @@ function migrate_lift_rest_create_job( $request ) {
 		$active = Migrate_Lift_Job_Engine::list_jobs( array( 'kind' => 'backup', 'limit' => 10 ) );
 		foreach ( $active['jobs'] ?? array() as $j ) {
 			if ( in_array( $j['state'], array( 'queued', 'running', 'paused' ), true ) ) {
+				$updated_at   = ! empty( $j['updated_at'] ) ? (int) $j['updated_at'] : 0;
+				$locked_until = ! empty( $j['locked_until'] ) ? (int) $j['locked_until'] : 0;
+				$is_locked    = $locked_until > time();
+				$is_stale     = ( ! $is_locked && ( time() - $updated_at ) > 180 );
+
+				if ( $is_stale ) {
+					// Auto-clean abandoned job so the user is not permanently trapped.
+					Migrate_Lift_Job_Engine::cancel_job( $j['id'] );
+					continue;
+				}
+
 				return new WP_Error(
 					'backup_job_already_active',
 					/* translators: 1: Job ID, 2: Percentage completed. */
@@ -1671,8 +1698,7 @@ function migrate_lift_rest_clear_activity( $request ) {
  * @return WP_REST_Response|WP_Error
  */
 function migrate_lift_rest_start_backup( $request ) {
-	$params = $request->get_param( 'params' );
-	$params = is_array( $params ) ? $params : array();
+	$params = migrate_lift_sanitize_job_params( $request->get_param( 'params' ) );
 	$idemp  = sanitize_text_field( (string) $request->get_param( 'idempotency_key' ) );
 
 	// Disable repeat requests while one matching job exists.
@@ -1680,6 +1706,17 @@ function migrate_lift_rest_start_backup( $request ) {
 		$active = Migrate_Lift_Job_Engine::list_jobs( array( 'kind' => 'backup', 'limit' => 10 ) );
 		foreach ( $active['jobs'] ?? array() as $j ) {
 			if ( in_array( $j['state'], array( 'queued', 'running', 'paused' ), true ) ) {
+				$updated_at   = ! empty( $j['updated_at'] ) ? (int) $j['updated_at'] : 0;
+				$locked_until = ! empty( $j['locked_until'] ) ? (int) $j['locked_until'] : 0;
+				$is_locked    = $locked_until > time();
+				$is_stale     = ( ! $is_locked && ( time() - $updated_at ) > 180 );
+
+				if ( $is_stale ) {
+					// Auto-clean abandoned job so the user is not permanently trapped.
+					Migrate_Lift_Job_Engine::cancel_job( $j['id'] );
+					continue;
+				}
+
 				return new WP_Error(
 					'backup_job_already_active',
 					/* translators: 1: Job ID, 2: Percentage completed. */
@@ -2054,7 +2091,7 @@ function migrate_lift_rest_upload_chunk( $request ) {
 	$files = $request->get_file_params();
 	$chunk = $files['chunk'] ?? null;
 
-	if ( ! $chunk || empty( $chunk['tmp_name'] ) || UPLOAD_ERR_OK !== $chunk['error'] ) {
+	if ( ! $chunk || empty( $chunk['tmp_name'] ) || UPLOAD_ERR_OK !== $chunk['error'] || ! is_uploaded_file( $chunk['tmp_name'] ) ) {
 		return new WP_Error( 'upload_chunk_error', __( 'Chunk data missing or upload failed in PHP.', 'migrate-lift' ), array( 'status' => 400 ) );
 	}
 
@@ -2201,32 +2238,6 @@ function migrate_lift_rest_restore_dry_run( $request ) {
 }
 
 /**
- * Creates and verifies a destination safety recovery checkpoint snapshot.
- *
- * @param WP_REST_Request $request Request.
- * @return WP_REST_Response|WP_Error
- */
-function migrate_lift_rest_restore_create_checkpoint( $request ) {
-	if ( ! class_exists( 'Migrate_Lift_Restore_Preflight' ) ) {
-		return new WP_Error( 'preflight_engine_missing', __( 'Restore Preflight engine is unavailable.', 'migrate-lift' ), array( 'status' => 500 ) );
-	}
-
-	try {
-		$checkpoint = Migrate_Lift_Restore_Preflight::create_recovery_checkpoint();
-		return rest_ensure_response(
-			array(
-				'success' => true,
-				/* translators: %s: Checkpoint filename. */
-				'message' => sprintf( __( 'Safety recovery checkpoint "%s" created and verified.', 'migrate-lift' ), $checkpoint['file'] ),
-				'data'    => $checkpoint,
-			)
-		);
-	} catch ( Exception $e ) {
-		return new WP_Error( 'checkpoint_creation_failed', $e->getMessage(), array( 'status' => 400 ) );
-	}
-}
-
-/**
  * Returns current registered recovery checkpoint details and recent recovery audit logs.
  *
  * @param WP_REST_Request $request Request.
@@ -2256,7 +2267,7 @@ function migrate_lift_rest_restore_diff_preview( $request ) {
 	$file      = (string) $request->get_param( 'file' );
 	$file_mode = (string) ( $request->get_param( 'file_mode' ) ?: 'overwrite_matching' );
 	$db_mode   = (string) ( $request->get_param( 'db_mode' ) ?: 'replace_mapped' );
-	$groups    = (array) ( $request->get_param( 'selected_tables' ) ?: array() );
+	$groups    = migrate_lift_sanitize_list( $request->get_param( 'selected_tables' ) );
 
 	try {
 		$file_diff = class_exists( 'Migrate_Lift_File_Replacement_Engine' )
@@ -2281,7 +2292,6 @@ function migrate_lift_rest_restore_diff_preview( $request ) {
 
 /**
  * Validates preflight, confirmation, and recovery checkpoint before restore.
- * In Part 10, destructive apply is safely locked until replacement engines in Parts 11 & 12.
  * When action is 'apply', executes safe staged file replacement and atomic database swap.
  *
  * @param WP_REST_Request $request Request.
@@ -2297,9 +2307,14 @@ function migrate_lift_rest_restore_execute( $request ) {
 	$action          = (string) ( $request->get_param( 'action' ) ?: 'preview' );
 	$file_mode       = (string) ( $request->get_param( 'file_mode' ) ?: 'overwrite_matching' );
 	$db_mode         = (string) ( $request->get_param( 'db_mode' ) ?: 'replace_mapped' );
-	$selected_tables = (array) ( $request->get_param( 'selected_tables' ) ?: array() );
 	$preserve_admin  = (bool) $request->get_param( 'preserve_admin_user' );
 	$confirm_delete  = (bool) $request->get_param( 'confirm_delete' );
+
+	$file_modes = array( Migrate_Lift_File_Replacement_Engine::MODE_ADD_MISSING, Migrate_Lift_File_Replacement_Engine::MODE_OVERWRITE_MATCHING, Migrate_Lift_File_Replacement_Engine::MODE_SYNC_MANAGED );
+	$db_modes   = array( Migrate_Lift_Database_Replacement_Engine::MODE_REPLACE_MAPPED, Migrate_Lift_Database_Replacement_Engine::MODE_KEEP );
+	if ( ! in_array( $file_mode, $file_modes, true ) || ! in_array( $db_mode, $db_modes, true ) ) {
+		return new WP_Error( 'invalid_restore_mode', __( 'Unknown file or database replacement mode.', 'migrate-lift' ), array( 'status' => 400 ) );
+	}
 
 	// 1. Validate site hostname confirmation.
 	try {
@@ -2333,14 +2348,14 @@ function migrate_lift_rest_restore_execute( $request ) {
 		);
 	}
 
-	// 4. Default preview mode (or locked gate in Part 10 verification)
+	// 4. Nothing is changed unless the request explicitly asks to apply.
 	if ( 'apply' !== $action ) {
 		return rest_ensure_response(
 			array(
 				'success'    => true,
 				'status'     => 'preflight_verified',
 				'locked'     => true,
-				'message'    => __( 'Preflight checks passed and safety recovery checkpoint is verified. Destructive file and database replacement will be executed when replacement modules (Parts 11 & 12) are activated.', 'migrate-lift' ),
+				'message'    => __( 'Preflight checks passed and the recovery checkpoint is verified. Nothing has been changed yet.', 'migrate-lift' ),
 				'data'       => array(
 					'archive'    => $file,
 					'checkpoint' => $recovery['checkpoint'],
@@ -2350,56 +2365,150 @@ function migrate_lift_rest_restore_execute( $request ) {
 		);
 	}
 
-	// 5. Action is 'apply': Execute File Replacement (Part 11) & Database Replacement (Part 12)
-	try {
-		$file_results = null;
-		if ( class_exists( 'Migrate_Lift_File_Replacement_Engine' ) ) {
-			$file_results = Migrate_Lift_File_Replacement_Engine::apply_file_replacement(
-				$file,
-				$file_mode,
-				array( 'confirm_delete' => $confirm_delete )
-			);
-		}
+	// 5. Action is 'apply'. The database is prepared first because that is the step most likely
+	// to fail and it does not touch the live site. The table swap comes last and is atomic.
+	if ( function_exists( 'set_time_limit' ) ) {
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, Squiz.PHP.DiscouragedFunctions.Discouraged
+		@set_time_limit( 0 );
+	}
 
-		$db_results = null;
-		if ( class_exists( 'Migrate_Lift_Database_Replacement_Engine' ) ) {
-			$db_results = Migrate_Lift_Database_Replacement_Engine::apply_database_replacement(
-				$file,
-				$db_mode,
-				array(
-					'selected_groups'     => $selected_tables,
-					'preserve_admin_user' => $preserve_admin,
-				)
+	$replace_db = Migrate_Lift_Database_Replacement_Engine::MODE_KEEP !== $db_mode;
+	$phase      = 'prepare';
+
+	try {
+		$prepared = $replace_db ? Migrate_Lift_Database_Replacement_Engine::prepare_database_replacement( $file ) : null;
+
+		$phase        = 'files';
+		$file_results = Migrate_Lift_File_Replacement_Engine::apply_file_replacement(
+			$file,
+			$file_mode,
+			array( 'confirm_delete' => $confirm_delete )
+		);
+
+		$phase      = 'database';
+		$db_results = $replace_db
+			? Migrate_Lift_Database_Replacement_Engine::commit_database_replacement( $file, $db_mode, $prepared, array( 'preserve_admin_user' => $preserve_admin ) )
+			: array(
+				'success'        => true,
+				'mode'           => $db_mode,
+				'tables_swapped' => 0,
 			);
-		}
 
 		return rest_ensure_response(
 			array(
 				'success'        => true,
 				'status'         => 'completed',
 				'locked'         => false,
-				'message'        => __( 'Restoration successfully executed. Site files and database tables have been safely replaced.', 'migrate-lift' ),
+				'message'        => __( 'Restoration successfully executed. Site files and database tables have been replaced.', 'migrate-lift' ),
 				'file_results'   => $file_results,
 				'db_results'     => $db_results,
 				'recovery_point' => $recovery['checkpoint'],
 				'session_info'   => array(
 					'admin_preserved'  => ! empty( $db_results['admin_preserved'] ),
-					'relogin_required' => empty( $db_results['admin_preserved'] ) && ( ! $db_results || 'keep_destination' !== $db_mode ),
+					'relogin_required' => $replace_db && empty( $db_results['admin_preserved'] ),
 				),
 			)
 		);
 	} catch ( Throwable $e ) {
+		if ( 'database' !== $phase ) {
+			try {
+				Migrate_Lift_Database_Replacement_Engine::discard_staged_tables();
+			} catch ( Throwable $cleanup_error ) {
+				unset( $cleanup_error );
+			}
+		}
+
+		if ( 'database' === $phase ) {
+			$message = sprintf(
+				/* translators: 1: Error message details, 2: Recovery checkpoint file name. */
+				__( 'The site files were replaced, but the database swap failed and the database was left as it was: %1$s. Restore the recovery checkpoint %2$s to return the site to its earlier state.', 'migrate-lift' ),
+				$e->getMessage(),
+				$recovery['checkpoint']['file'] ?? ''
+			);
+		} else {
+			/* translators: %s: Error message details. */
+			$message = sprintf( __( 'Restoration failed and the site was not changed: %s', 'migrate-lift' ), $e->getMessage() );
+		}
+
 		return new WP_Error(
 			'restore_execution_failed',
-			/* translators: %s: Error message details. */
-			sprintf( __( 'Restoration failed and was safely rolled back: %s', 'migrate-lift' ), $e->getMessage() ),
-			array( 'status' => 500, 'error' => $e->getMessage() )
+			$message,
+			array(
+				'status' => 500,
+				'error'  => $e->getMessage(),
+				'phase'  => $phase,
+			)
 		);
 	}
 }
 
 /**
- * Generates a short-lived single-use destination pairing token (Part 13).
+ * Runs one step of a recovery checkpoint on this site.
+ *
+ * @param WP_REST_Request $request Request.
+ * @return WP_REST_Response|WP_Error
+ */
+function migrate_lift_rest_checkpoint_step( $request ) {
+	$step = Migrate_Lift_Restore_Preflight::checkpoint_step( sanitize_key( (string) $request->get_param( 'job_id' ) ) );
+	if ( is_wp_error( $step ) ) {
+		return $step;
+	}
+
+	return rest_ensure_response(
+		array(
+			'success' => true,
+			'data'    => $step,
+		)
+	);
+}
+
+/**
+ * Admin relay handler: Source runs one step of a recovery checkpoint on the paired destination.
+ *
+ * @param WP_REST_Request $request Request.
+ * @return WP_REST_Response|WP_Error
+ */
+function migrate_lift_rest_pair_remote_checkpoint( $request ) {
+	$res = Migrate_Lift_Direct_Transfer_Engine::send_signed_remote_request(
+		sanitize_key( (string) $request->get_param( 'pair_id' ) ),
+		'/remote/checkpoint',
+		array( 'job_id' => sanitize_key( (string) $request->get_param( 'job_id' ) ) ),
+		300
+	);
+
+	return is_wp_error( $res ) ? $res : rest_ensure_response( $res );
+}
+
+/**
+ * Sanitizes a list of strings from a request.
+ *
+ * @param mixed $values Raw value.
+ * @return array
+ */
+function migrate_lift_sanitize_list( $values ) {
+	return array_values( array_map( 'sanitize_text_field', array_filter( (array) $values, 'is_string' ) ) );
+}
+
+/**
+ * Sanitizes the free-form params object of a job request.
+ *
+ * @param mixed $params Raw value.
+ * @return array
+ */
+function migrate_lift_sanitize_job_params( $params ) {
+	if ( ! is_array( $params ) ) {
+		return array();
+	}
+	return map_deep(
+		$params,
+		function ( $value ) {
+			return is_string( $value ) ? sanitize_text_field( $value ) : $value;
+		}
+	);
+}
+
+/**
+ * Generates a short-lived single-use destination pairing token.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2412,7 +2521,7 @@ function migrate_lift_rest_pair_generate_token( $request ) {
 }
 
 /**
- * Initiates handshake connection from source to destination (Part 13).
+ * Initiates handshake connection from source to destination.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2433,7 +2542,7 @@ function migrate_lift_rest_pair_connect( $request ) {
 }
 
 /**
- * Returns list of paired sites with credentials masked (Part 13).
+ * Returns list of paired sites with credentials masked.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response
@@ -2451,7 +2560,7 @@ function migrate_lift_rest_pair_status( $request ) {
 }
 
 /**
- * Revokes a paired site connection (Part 13).
+ * Revokes a paired site connection.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2468,7 +2577,7 @@ function migrate_lift_rest_pair_revoke( $request ) {
 }
 
 /**
- * Verifies round-trip cross-site connectivity with paired site (Part 13).
+ * Verifies round-trip cross-site connectivity with paired site.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2489,7 +2598,7 @@ function migrate_lift_rest_pair_verify( $request ) {
 }
 
 /**
- * Handles incoming handshake on destination site (Part 13).
+ * Handles incoming handshake on destination site.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2502,7 +2611,7 @@ function migrate_lift_rest_pair_handshake( $request ) {
 }
 
 /**
- * Responds to cross-site ping for round-trip latency verification (Part 13).
+ * Responds to cross-site ping for round-trip latency verification.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response
@@ -2520,7 +2629,7 @@ function migrate_lift_rest_pair_ping( $request ) {
 }
 
 /**
- * Handles incoming revocation notification from paired remote site (Part 13).
+ * Handles incoming revocation notification from paired remote site.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response
@@ -2538,7 +2647,7 @@ function migrate_lift_rest_pair_revoke_remote( $request ) {
 }
 
 /**
- * Starts a direct server-to-server archive transfer background job (Part 14).
+ * Starts a direct server-to-server archive transfer background job.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2567,7 +2676,7 @@ function migrate_lift_rest_transfer_start( $request ) {
 }
 
 /**
- * Polls status of a direct transfer job (Part 14).
+ * Polls status of a direct transfer job.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2589,7 +2698,7 @@ function migrate_lift_rest_transfer_status( $request ) {
 }
 
 /**
- * Cancels an in-flight direct transfer job (Part 14).
+ * Cancels an in-flight direct transfer job.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2600,16 +2709,27 @@ function migrate_lift_rest_transfer_cancel( $request ) {
 		return new WP_Error( 'job_engine_missing', __( 'Job engine unavailable.', 'migrate-lift' ), array( 'status' => 500 ) );
 	}
 
-	$res = Migrate_Lift_Job_Engine::request_cancellation( $job_id );
+	$job = Migrate_Lift_Job_Engine::get_job( $job_id );
+	$res = Migrate_Lift_Job_Engine::cancel_job( $job_id );
 	if ( is_wp_error( $res ) ) {
 		return $res;
+	}
+
+	// Best effort: the destination also removes the chunks it received.
+	if ( $job && 'direct_transfer' === $job['kind'] && class_exists( 'Migrate_Lift_Direct_Transfer_Engine' ) ) {
+		Migrate_Lift_Direct_Transfer_Engine::send_signed_remote_request(
+			$job['params']['pair_id'],
+			'/transfer/abort',
+			array( 'transfer_id' => $job['params']['transfer_id'] ),
+			10
+		);
 	}
 
 	return rest_ensure_response( array( 'success' => true, 'job_id' => $job_id ) );
 }
 
 /**
- * Destination handler: Initializes incoming transfer session (Part 14).
+ * Destination handler: Initializes incoming transfer session.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2622,7 +2742,7 @@ function migrate_lift_rest_transfer_init( $request ) {
 }
 
 /**
- * Destination handler: Receives incoming bounded chunk (Part 14).
+ * Destination handler: Receives incoming bounded chunk.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2635,7 +2755,17 @@ function migrate_lift_rest_transfer_chunk( $request ) {
 }
 
 /**
- * Destination handler: Reassembles and verifies complete archive (Part 14).
+ * Destination handler: Removes the temporary files of a cancelled transfer.
+ *
+ * @param WP_REST_Request $request Request.
+ * @return WP_REST_Response|WP_Error
+ */
+function migrate_lift_rest_transfer_abort( $request ) {
+	return Migrate_Lift_Direct_Transfer_Engine::handle_destination_abort( $request );
+}
+
+/**
+ * Destination handler: Reassembles and verifies complete archive.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2648,7 +2778,7 @@ function migrate_lift_rest_transfer_finalize( $request ) {
 }
 
 /**
- * Cross-site handler: Destination runs preflight checks on received archive (Part 15).
+ * Cross-site handler: Destination runs preflight checks on received archive.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2673,7 +2803,7 @@ function migrate_lift_rest_remote_preflight( $request ) {
 }
 
 /**
- * Cross-site handler: Destination runs diff preview on received archive (Part 15).
+ * Cross-site handler: Destination runs diff preview on received archive.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2683,7 +2813,7 @@ function migrate_lift_rest_remote_diff_preview( $request ) {
 }
 
 /**
- * Cross-site handler: Destination executes restore apply (Part 15).
+ * Cross-site handler: Destination executes restore apply.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2693,7 +2823,7 @@ function migrate_lift_rest_remote_apply( $request ) {
 }
 
 /**
- * Admin relay handler: Source requests preflight from paired destination (Part 15).
+ * Admin relay handler: Source requests preflight from paired destination.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2716,7 +2846,7 @@ function migrate_lift_rest_pair_remote_preflight( $request ) {
 }
 
 /**
- * Admin relay handler: Source requests diff preview from paired destination (Part 15).
+ * Admin relay handler: Source requests diff preview from paired destination.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2730,7 +2860,7 @@ function migrate_lift_rest_pair_remote_diff( $request ) {
 	$file            = sanitize_file_name( (string) $request->get_param( 'file' ) );
 	$file_mode       = sanitize_key( (string) ( $request->get_param( 'file_mode' ) ?: 'overwrite_matching' ) );
 	$db_mode         = sanitize_key( (string) ( $request->get_param( 'db_mode' ) ?: 'replace_mapped' ) );
-	$selected_tables = (array) ( $request->get_param( 'selected_tables' ) ?: array() );
+	$selected_tables = migrate_lift_sanitize_list( $request->get_param( 'selected_tables' ) );
 
 	$payload = array(
 		'file'            => $file,
@@ -2748,7 +2878,7 @@ function migrate_lift_rest_pair_remote_diff( $request ) {
 }
 
 /**
- * Admin relay handler: Source executes remote restore apply on paired destination (Part 15).
+ * Admin relay handler: Source executes remote restore apply on paired destination.
  *
  * @param WP_REST_Request $request Request.
  * @return WP_REST_Response|WP_Error
@@ -2763,7 +2893,7 @@ function migrate_lift_rest_pair_remote_apply( $request ) {
 	$confirm_host    = sanitize_text_field( (string) $request->get_param( 'confirm_host' ) );
 	$file_mode       = sanitize_key( (string) ( $request->get_param( 'file_mode' ) ?: 'overwrite_matching' ) );
 	$db_mode         = sanitize_key( (string) ( $request->get_param( 'db_mode' ) ?: 'replace_mapped' ) );
-	$selected_tables = (array) ( $request->get_param( 'selected_tables' ) ?: array() );
+	$selected_tables = migrate_lift_sanitize_list( $request->get_param( 'selected_tables' ) );
 	$preserve_admin  = (bool) $request->get_param( 'preserve_admin_user' );
 	$confirm_delete  = (bool) $request->get_param( 'confirm_delete' );
 
@@ -2778,7 +2908,8 @@ function migrate_lift_rest_pair_remote_apply( $request ) {
 		'confirm_delete'      => $confirm_delete,
 	);
 
-	$res = Migrate_Lift_Direct_Transfer_Engine::send_signed_remote_request( $pair_id, '/remote/apply', $payload );
+	// A restore runs in this one request on the destination, so allow it plenty of time.
+	$res = Migrate_Lift_Direct_Transfer_Engine::send_signed_remote_request( $pair_id, '/remote/apply', $payload, 900 );
 	if ( is_wp_error( $res ) ) {
 		return $res;
 	}

@@ -24,11 +24,11 @@ function migrate_lift_export_step( $step ) {
 	migrate_lift_timer_start();
 
 	if ( 'start' === $step ) {
-		migrate_lift_rmdir( migrate_lift_dir( 'export-tmp' ) );
+		migrate_lift_rmdir( migrate_lift_tmp( 'export-tmp' ) );
 		foreach ( glob( migrate_lift_dir( '*.part' ) ) as $part ) {
 			wp_delete_file( $part );
 		}
-		wp_mkdir_p( migrate_lift_dir( 'export-tmp' ) );
+		wp_mkdir_p( migrate_lift_tmp( 'export-tmp' ) );
 
 		$host = sanitize_title( (string) wp_parse_url( home_url(), PHP_URL_HOST ) );
 		migrate_lift_state_put(
@@ -71,7 +71,7 @@ function migrate_lift_export_step( $step ) {
 
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename
 		rename( migrate_lift_dir( $s['name'] . '.part' ), migrate_lift_dir( $s['name'] ) );
-		migrate_lift_rmdir( migrate_lift_dir( 'export-tmp' ) );
+		migrate_lift_rmdir( migrate_lift_tmp( 'export-tmp' ) );
 		migrate_lift_state_delete( 'export' );
 
 		return migrate_lift_progress(
@@ -137,9 +137,9 @@ function migrate_lift_is_excluded( $rel ) {
  * @param array $s State.
  */
 function migrate_lift_export_scan( &$s ) {
-	$base   = untrailingslashit( str_replace( '\\', '/', (string) constant( 'WP_CONTENT_DIR' ) ) );
+	$base   = str_replace( '\\', '/', migrate_lift_content_dir() );
 	$cut    = strlen( $base ) + 1;
-	$list   = fopen( migrate_lift_dir( 'export-tmp/files.txt' ), 'wb' );
+	$list   = fopen( migrate_lift_tmp( 'export-tmp', 'files.txt' ), 'wb' );
 	$filter = new RecursiveCallbackFilterIterator(
 		new RecursiveDirectoryIterator( $base, FilesystemIterator::SKIP_DOTS | FilesystemIterator::UNIX_PATHS ),
 		function ( $item ) use ( $cut ) {
@@ -178,39 +178,40 @@ function migrate_lift_export_db( &$s ) {
 		$s['sql_size'] = 0;
 	}
 
-	$path = migrate_lift_dir( 'export-tmp/database.sql' );
+	$path = migrate_lift_tmp( 'export-tmp', 'database.sql' );
 	migrate_lift_truncate( $path, $s['sql_size'] );
-	$out   = fopen( $path, 'ab' );
-	$cut   = strlen( $wpdb->prefix );
-	$batch = 500;
+	$out = fopen( $path, 'ab' );
+	$cut = strlen( $wpdb->prefix );
+	$max = 500;
 
 	while ( $s['t'] < count( $s['tables'] ) && ! migrate_lift_out_of_time() ) {
 		$table  = $s['tables'][ $s['t'] ];
 		$target = migrate_lift_name( MIGRATE_LIFT_TOKEN . substr( $table, $cut ) );
 
 		if ( 0 === $s['row'] ) {
-			// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_fetch_row
-			$row    = mysqli_fetch_row( migrate_lift_q( 'SHOW CREATE TABLE ' . migrate_lift_name( $table ) ) );
-			$create = preg_replace( '/^CREATE TABLE `[^`]+`/', 'CREATE TABLE ' . $target, $row[1] );
-			$create = str_replace( 'REFERENCES `' . $wpdb->prefix, 'REFERENCES `' . MIGRATE_LIFT_TOKEN, $create );
+			$created = migrate_lift_rows( 'SHOW CREATE TABLE ' . migrate_lift_name( $table ) );
+			$create  = preg_replace( '/^CREATE TABLE `[^`]+`/', 'CREATE TABLE ' . $target, $created[0][1] );
+			$create  = str_replace( 'REFERENCES `' . $wpdb->prefix, 'REFERENCES `' . MIGRATE_LIFT_TOKEN, $create );
 			fwrite( $out, "DROP TABLE IF EXISTS $target;\n" . str_replace( array( "\r\n", "\n" ), ' ', $create ) . ";\n" );
 		}
 
 		$info   = migrate_lift_table_info( $table );
 		$cols   = implode( ',', array_map( 'migrate_lift_name', $info['cols'] ) );
 		$order  = $info['pk'] ? ' ORDER BY ' . implode( ',', array_map( 'migrate_lift_name', $info['pk'] ) ) : '';
-		$result = migrate_lift_q( "SELECT $cols FROM " . migrate_lift_name( $table ) . "$order LIMIT {$s['row']}, $batch" );
+		$batch  = isset( $s['batch'] ) ? (int) $s['batch'] : 100;
+		$fetch  = migrate_lift_rows( "SELECT $cols FROM " . migrate_lift_name( $table ) . "$order LIMIT " . (int) $s['row'] . ", $batch" );
 		$head   = "INSERT INTO $target ($cols) VALUES ";
 		$values = array();
 		$length = 0;
-		$rows   = 0;
+		$bytes  = 0;
+		$rows   = count( $fetch );
 
-		// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_fetch_row, WordPress.CodeAnalysis.AssignmentInCondition.FoundInWhileCondition
-		while ( $row = mysqli_fetch_row( $result ) ) {
-			++$rows;
+		foreach ( $fetch as $row ) {
 			foreach ( $row as $i => $value ) {
 				if ( null === $value ) {
 					$row[ $i ] = 'NULL';
+				} elseif ( $info['bit'][ $i ] ) {
+					$row[ $i ] = migrate_lift_bit_literal( $value );
 				} elseif ( $info['bin'][ $i ] ) {
 					$row[ $i ] = '' === $value ? "''" : '0x' . bin2hex( $value );
 				} else {
@@ -218,15 +219,16 @@ function migrate_lift_export_db( &$s ) {
 				}
 			}
 			$values[] = '(' . implode( ',', $row ) . ')';
-			$length  += strlen( end( $values ) );
+			$size     = strlen( end( $values ) );
+			$length  += $size;
+			$bytes   += $size;
 			if ( $length > 1000000 ) {
 				fwrite( $out, $head . implode( ',', $values ) . ";\n" );
 				$values = array();
 				$length = 0;
 			}
 		}
-		// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_free_result
-		mysqli_free_result( $result );
+		unset( $fetch );
 		if ( $values ) {
 			fwrite( $out, $head . implode( ',', $values ) . ";\n" );
 		}
@@ -234,8 +236,10 @@ function migrate_lift_export_db( &$s ) {
 		if ( $rows < $batch ) {
 			++$s['t'];
 			$s['row'] = 0;
+			unset( $s['batch'] );
 		} else {
-			$s['row'] += $batch;
+			$s['row']  += $batch;
+			$s['batch'] = migrate_lift_next_batch( $batch, $bytes, $max );
 		}
 	}
 
@@ -256,7 +260,7 @@ function migrate_lift_export_archive( &$s ) {
 	$part = migrate_lift_dir( $s['name'] . '.part' );
 
 	if ( ! isset( $s['arc_size'] ) ) {
-		$sql              = migrate_lift_dir( 'export-tmp/database.sql' );
+		$sql              = migrate_lift_tmp( 'export-tmp', 'database.sql' );
 		$s['arc_size']    = 0;
 		$s['list_pos']    = 0;
 		$s['done_bytes']  = 0;
@@ -289,8 +293,8 @@ function migrate_lift_export_archive( &$s ) {
 		$s['manifest_on'] = true;
 	}
 
-	$list     = fopen( migrate_lift_dir( 'export-tmp/files.txt' ), 'rb' );
-	$base     = untrailingslashit( (string) constant( 'WP_CONTENT_DIR' ) ) . '/';
+	$list     = fopen( migrate_lift_tmp( 'export-tmp', 'files.txt' ), 'rb' );
+	$base     = migrate_lift_content_dir() . '/';
 	$finished = false;
 	fseek( $list, $s['list_pos'] );
 

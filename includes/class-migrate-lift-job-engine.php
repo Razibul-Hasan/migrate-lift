@@ -68,8 +68,10 @@ class Migrate_Lift_Job_Engine {
 	 * Initializes built-in job handlers.
 	 */
 	public static function init() {
-		// Register built-in non-destructive demonstration test job.
-		self::register_handler( 'test_job', array( __CLASS__, 'handle_test_job_step' ) );
+		// Exercised by the test runner only.
+		if ( defined( 'MIGRATE_LIFT_TESTING' ) ) {
+			self::register_handler( 'test_job', array( __CLASS__, 'handle_test_job_step' ) );
+		}
 
 		// Register backup handler if loaded.
 		if ( class_exists( 'Migrate_Lift_Backup_Engine' ) ) {
@@ -534,19 +536,20 @@ class Migrate_Lift_Job_Engine {
 			return new WP_Error( 'job_not_found', 'Job not found.', array( 'status' => 404 ) );
 		}
 
+		// If completed or failed, cannot cancel.
 		if ( in_array( $job['state'], array( self::STATE_COMPLETED, self::STATE_FAILED ), true ) ) {
 			return new WP_Error( 'job_terminal', 'Cannot cancel a finished job.', array( 'status' => 400 ) );
 		}
 
-		// If queued or paused, we can directly fail/cancel it.
-		if ( in_array( $job['state'], array( self::STATE_QUEUED, self::STATE_PAUSED ), true ) ) {
-			$result = self::transition( $job, self::STATE_FAILED, 'Cancelled by administrator before processing.' );
-			self::release_lease( $job );
-			return $result;
+		// Clean up staging files if backup job.
+		if ( 'backup' === $job['kind'] && class_exists( 'Migrate_Lift_Backup_Engine' ) ) {
+			Migrate_Lift_Backup_Engine::cleanup_job( $job );
 		}
 
-		// If running, mark cancel-requested so active worker cleans up.
-		return self::transition( $job, self::STATE_CANCEL_REQUESTED, 'Cancellation requested by administrator.' );
+		// Directly mark as failed/cancelled and release worker lease.
+		$result = self::transition( $job, self::STATE_FAILED, 'Cancelled by user request.' );
+		self::release_lease( $job );
+		return $result;
 	}
 
 	/**
@@ -661,11 +664,7 @@ class Migrate_Lift_Job_Engine {
 	 * @return string
 	 */
 	public static function get_jobs_dir() {
-		if ( function_exists( 'migrate_lift_dir' ) ) {
-			$dir = migrate_lift_dir( self::JOBS_DIR );
-		} else {
-			$dir = untrailingslashit( WP_CONTENT_DIR ) . '/migrate-lift-files/' . self::JOBS_DIR;
-		}
+		$dir = migrate_lift_dir( self::JOBS_DIR );
 
 		if ( ! is_dir( $dir ) ) {
 			wp_mkdir_p( $dir );

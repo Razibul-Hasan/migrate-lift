@@ -414,11 +414,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 		$total_replacements = 0;
 
 		foreach ( $tables as $table_name ) {
-			try {
-				$info = migrate_lift_table_info( $table_name );
-			} catch ( Throwable $e ) {
-				continue;
-			}
+			$info = migrate_lift_table_info( $table_name );
 
 			$text_cols = array();
 			foreach ( $info['cols'] as $idx => $col ) {
@@ -427,7 +423,18 @@ class Migrate_Lift_Database_Replacement_Engine {
 				}
 			}
 
-			if ( empty( $text_cols ) || empty( $info['pk'] ) ) {
+			if ( empty( $text_cols ) ) {
+				continue;
+			}
+
+			// No key to update rows by: plain REPLACE(), not serialization-safe, but such tables are rare.
+			if ( empty( $info['pk'] ) ) {
+				foreach ( $text_cols as $col ) {
+					foreach ( $pairs as $from => $to ) {
+						$changed = migrate_lift_q( 'UPDATE ' . migrate_lift_name( $table_name ) . ' SET ' . migrate_lift_name( $col ) . ' = REPLACE(' . migrate_lift_name( $col ) . ', ' . migrate_lift_e( $from ) . ', ' . migrate_lift_e( $to ) . ')' );
+						$total_replacements += (int) $changed;
+					}
+				}
 				continue;
 			}
 
@@ -436,10 +443,12 @@ class Migrate_Lift_Database_Replacement_Engine {
 			$order_cols    = implode( ',', array_map( 'migrate_lift_name', $info['pk'] ) );
 
 			$query  = "SELECT $select_cols FROM $table_escaped ORDER BY $order_cols";
-			try {
-				$result = migrate_lift_q( $query );
-				// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_fetch_assoc
-				while ( ( $row = mysqli_fetch_assoc( $result ) ) !== null ) {
+			$batch  = 100;
+			$offset = 0;
+			// Read in pages: only text outside the key changes here, so the row order stays stable.
+			do {
+				$rows = migrate_lift_rows( "$query LIMIT $offset, $batch", ARRAY_A );
+				foreach ( $rows as $row ) {
 					$updates = array();
 					foreach ( $text_cols as $col ) {
 						$original = $row[ $col ];
@@ -461,11 +470,8 @@ class Migrate_Lift_Database_Replacement_Engine {
 						migrate_lift_q( "UPDATE $table_escaped SET " . implode( ', ', $updates ) . ' WHERE ' . implode( ' AND ', $where ) );
 					}
 				}
-				// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_free_result
-				mysqli_free_result( $result );
-			} catch ( Throwable $e ) {
-				// Continue.
-			}
+				$offset += $batch;
+			} while ( count( $rows ) === $batch );
 		}
 
 		return $total_replacements;
@@ -535,7 +541,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 	 * Activates WordPress core maintenance mode by writing .maintenance file.
 	 */
 	public static function enable_maintenance_mode() {
-		$file    = defined( 'ABSPATH' ) ? ABSPATH . '.maintenance' : './.maintenance';
+		$file    = migrate_lift_root_dir() . '.maintenance';
 		$content = "<?php \$upgrading = " . ( time() + 300 ) . ";";
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents, PluginCheck.CodeAnalysis.WriteFile.ABSPATHDetected -- Standard WordPress core .maintenance flag file in root.
 		@file_put_contents( $file, $content );
@@ -545,7 +551,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 	 * Deactivates WordPress core maintenance mode.
 	 */
 	public static function disable_maintenance_mode() {
-		$file = defined( 'ABSPATH' ) ? ABSPATH . '.maintenance' : './.maintenance';
+		$file = migrate_lift_root_dir() . '.maintenance';
 		if ( file_exists( $file ) ) {
 			wp_delete_file( $file );
 		}
@@ -642,11 +648,137 @@ class Migrate_Lift_Database_Replacement_Engine {
 	}
 
 	/**
+	 * Copies this site's own MigrateLift records over the imported ones, so the pairing and the
+	 * recovery point that protect this restore are still there after the swap.
+	 */
+	protected static function keep_plugin_state_in_staged_options() {
+		$options = migrate_lift_name( MIGRATE_LIFT_TMP_PREFIX . 'options' );
+
+		foreach ( array( 'migrate_lift_paired_sites', 'migrate_lift_pending_pairings', 'migrate_lift_recovery_point', 'migrate_lift_recovery_metadata', 'migrate_lift_backup_metadata' ) as $name ) {
+			migrate_lift_q( "DELETE FROM $options WHERE option_name = " . migrate_lift_e( $name ) );
+
+			$value = get_option( $name, null );
+			if ( null !== $value ) {
+				migrate_lift_q( "INSERT INTO $options (option_name, option_value, autoload) VALUES (" . migrate_lift_e( $name ) . ', ' . migrate_lift_e( maybe_serialize( $value ) ) . ", 'no')" );
+			}
+		}
+	}
+
+	/**
+	 * Drops the temporary tables of an abandoned restore.
+	 */
+	public static function discard_staged_tables() {
+		foreach ( migrate_lift_tables( MIGRATE_LIFT_TMP_PREFIX ) as $table ) {
+			migrate_lift_q( 'DROP TABLE IF EXISTS ' . migrate_lift_name( $table ) );
+		}
+	}
+
+	/**
+	 * Builds the complete new database in temporary tables. The live site is not touched, so
+	 * any failure here leaves it exactly as it was.
+	 *
+	 * @param string $archive_name Filename of archive.
+	 * @return array staged_tables and replacements_count.
+	 * @throws Exception On failure.
+	 */
+	public static function prepare_database_replacement( $archive_name ) {
+		$archive_path = migrate_lift_archive_path( $archive_name );
+		$sql_staging  = migrate_lift_dir( 'staging/restore-sql-' . wp_generate_password( 20, false, false ) . '/database.sql' );
+
+		migrate_lift_db_session();
+
+		try {
+			self::extract_archive_sql( $archive_path, $sql_staging );
+
+			$staged_tables = self::stage_import_sql( $sql_staging );
+			if ( empty( $staged_tables ) ) {
+				throw new Exception( esc_html__( 'No database tables could be staged from archive SQL.', 'migrate-lift' ) );
+			}
+			if ( ! in_array( MIGRATE_LIFT_TMP_PREFIX . 'options', $staged_tables, true ) ) {
+				throw new Exception( esc_html__( 'The imported options table is missing. Import again.', 'migrate-lift' ) );
+			}
+
+			$manifest = migrate_lift_read_manifest( $archive_path );
+			$live     = migrate_lift_site_info();
+			$state    = array(
+				'manifest' => array_merge(
+					array(
+						'siteurl' => $manifest['home'],
+						'abspath' => $live['abspath'],
+						'plugin'  => $live['plugin'],
+					),
+					$manifest
+				),
+				'live'     => $live,
+			);
+
+			// Same replacement rules and final fixes as the archive import.
+			$replacements_count = self::transform_staged_tables( $staged_tables, migrate_lift_replace_pairs( $state ) );
+			migrate_lift_import_fix_options( $state );
+			self::keep_plugin_state_in_staged_options();
+
+			return array(
+				'staged_tables'      => $staged_tables,
+				'replacements_count' => $replacements_count,
+			);
+		} catch ( Throwable $e ) {
+			self::discard_staged_tables();
+			throw $e;
+		} finally {
+			if ( is_file( $sql_staging ) ) {
+				wp_delete_file( $sql_staging );
+			}
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir
+			@rmdir( dirname( $sql_staging ) );
+		}
+	}
+
+	/**
+	 * Swaps prepared temporary tables into place.
+	 *
+	 * @param string $archive_name Filename of archive.
+	 * @param string $db_mode      Replacement mode.
+	 * @param array  $prepared     Result of prepare_database_replacement().
+	 * @param array  $options      Execution options (preserve_admin_user).
+	 * @return array Execution report.
+	 * @throws Exception On failure.
+	 */
+	public static function commit_database_replacement( $archive_name, $db_mode, $prepared, $options = array() ) {
+		$admin_preserved = false;
+		if ( ! empty( $options['preserve_admin_user'] ) ) {
+			$admin_preserved = self::preserve_current_admin_user();
+		}
+
+		$swapped_tables = self::swap_staged_tables( $prepared['staged_tables'] );
+
+		Migrate_Lift_Activity_Logger::info(
+			'database_replacement_success',
+			/* translators: 1: replacement mode, 2: tables swapped count, 3: replacements count */
+			sprintf( __( 'Database replacement completed (%1$s): %2$d tables swapped, %3$d values transformed.', 'migrate-lift' ), $db_mode, count( $swapped_tables ), $prepared['replacements_count'] ),
+			array(
+				'archive'      => $archive_name,
+				'mode'         => $db_mode,
+				'tables'       => count( $swapped_tables ),
+				'replacements' => $prepared['replacements_count'],
+			)
+		);
+
+		return array(
+			'success'            => true,
+			'mode'               => $db_mode,
+			'tables_swapped'     => count( $swapped_tables ),
+			'tables_list'        => $swapped_tables,
+			'replacements_count' => $prepared['replacements_count'],
+			'admin_preserved'    => $admin_preserved,
+		);
+	}
+
+	/**
 	 * Full database replacement execution flow.
 	 *
 	 * @param string $archive_name   Filename of archive.
 	 * @param string $db_mode        Replacement mode.
-	 * @param array  $options        Execution options (selected_groups, preserve_admin, etc.).
+	 * @param array  $options        Execution options (preserve_admin_user).
 	 * @return array Execution report.
 	 * @throws Exception On failure.
 	 */
@@ -660,91 +792,16 @@ class Migrate_Lift_Database_Replacement_Engine {
 			);
 		}
 
-		$archive_path = migrate_lift_archive_path( $archive_name );
-		$id           = uniqid();
-		$sql_staging  = migrate_lift_dir( 'staging/restore-sql-' . $id . '/database.sql' );
-
 		try {
-			// 1. Extract database.sql to staging
-			self::extract_archive_sql( $archive_path, $sql_staging );
-
-			// 2. Stage into temporary tables (mltmp_*)
-			$staged_tables = self::stage_import_sql( $sql_staging );
-
-			if ( empty( $staged_tables ) ) {
-				throw new Exception( esc_html__( 'No database tables could be staged from archive SQL.', 'migrate-lift' ) );
-			}
-
-			// 3. Prepare search-replace pairs
-			$manifest = migrate_lift_read_manifest( $archive_path );
-			$source_home = untrailingslashit( (string) ( $manifest['home'] ?? '' ) );
-			$dest_home   = untrailingslashit( home_url() );
-
-			$pairs = array();
-			if ( $source_home !== $dest_home && ! empty( $source_home ) ) {
-				$pairs[ $source_home ]                                = $dest_home;
-				$pairs[ str_replace( '/', '\\/', $source_home ) ]     = str_replace( '/', '\\/', $dest_home );
-				$pairs[ rawurlencode( $source_home ) ]                = rawurlencode( $dest_home );
-			}
-
-			// 4. Run serialization-safe search and replace
-			$replacements_count = self::transform_staged_tables( $staged_tables, $pairs );
-
-			// 5. Optionally preserve current admin user
-			$admin_preserved = false;
-			if ( ! empty( $options['preserve_admin_user'] ) ) {
-				$admin_preserved = self::preserve_current_admin_user();
-			}
-
-			// 6. Execute atomic multi-table rename swap
-			$swapped_tables = self::swap_staged_tables( $staged_tables );
-
-			// 7. Cleanup staging SQL
-			if ( is_file( $sql_staging ) ) {
-				wp_delete_file( $sql_staging );
-				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir
-				@rmdir( dirname( $sql_staging ) );
-			}
-
-			if ( class_exists( 'Migrate_Lift_Activity_Logger' ) ) {
-				Migrate_Lift_Activity_Logger::info(
-					'database_replacement_success',
-					/* translators: 1: replacement mode, 2: tables swapped count, 3: replacements count */
-					sprintf( __( 'Database replacement completed (%1$s): %2$d tables swapped, %3$d values transformed.', 'migrate-lift' ), $db_mode, count( $swapped_tables ), $replacements_count ),
-					array(
-						'archive'      => $archive_name,
-						'mode'         => $db_mode,
-						'tables'       => count( $swapped_tables ),
-						'replacements' => $replacements_count,
-					)
-				);
-			}
-
-			return array(
-				'success'            => true,
-				'mode'               => $db_mode,
-				'tables_swapped'     => count( $swapped_tables ),
-				'tables_list'        => $swapped_tables,
-				'replacements_count' => $replacements_count,
-				'admin_preserved'    => $admin_preserved,
-			);
-
+			$prepared = self::prepare_database_replacement( $archive_name );
+			return self::commit_database_replacement( $archive_name, $db_mode, $prepared, $options );
 		} catch ( Throwable $e ) {
-			if ( is_file( $sql_staging ) ) {
-				wp_delete_file( $sql_staging );
-				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_rmdir
-				@rmdir( dirname( $sql_staging ) );
-			}
-
-			if ( class_exists( 'Migrate_Lift_Activity_Logger' ) ) {
-				Migrate_Lift_Activity_Logger::error(
-					'database_replacement_failed',
-					/* translators: %s: error message */
-					sprintf( __( 'Database replacement failed: %s', 'migrate-lift' ), $e->getMessage() ),
-					array( 'error' => $e->getMessage(), 'archive' => $archive_name )
-				);
-			}
-
+			Migrate_Lift_Activity_Logger::error(
+				'database_replacement_failed',
+				/* translators: %s: error message */
+				sprintf( __( 'Database replacement failed: %s', 'migrate-lift' ), $e->getMessage() ),
+				array( 'error' => $e->getMessage(), 'archive' => $archive_name )
+			);
 			throw $e;
 		}
 	}

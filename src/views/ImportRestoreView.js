@@ -1,5 +1,5 @@
 /**
- * ImportRestoreView Component (Part 09 & Part 10: Import Engine & Restore Wizard)
+ * ImportRestoreView Component (Import Engine & Restore Wizard)
  *
  * Implements:
  * - Three distinct tabs:
@@ -7,7 +7,6 @@
  *   2. "Server staging (SFTP / cPanel)" (Private dedicated directory)
  *   3. "Restore Wizard (Preflight & Recovery)" (7-step guided preflight & rollback snapshot)
  * - Complete quarantine inspection pipeline
- * - Strict non-destructive gating before Part 11 & Part 12
  */
 
 import { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from '@wordpress/element';

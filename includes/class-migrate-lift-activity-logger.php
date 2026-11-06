@@ -98,12 +98,8 @@ class Migrate_Lift_Activity_Logger {
 		}
 
 		// 1. Redact server absolute paths (ABSPATH, WP_CONTENT_DIR).
-		if ( defined( 'ABSPATH' ) && '' !== ABSPATH ) {
-			$text = str_replace( ABSPATH, '[ABSPATH]/', $text );
-		}
-		if ( defined( 'WP_CONTENT_DIR' ) && '' !== WP_CONTENT_DIR ) {
-			$text = str_replace( WP_CONTENT_DIR, '[WP_CONTENT_DIR]', $text );
-		}
+		$text = str_replace( migrate_lift_root_dir(), '[ABSPATH]/', $text );
+		$text = str_replace( migrate_lift_content_dir(), '[WP_CONTENT_DIR]', $text );
 		// Redact standard Windows or Unix home directories if present.
 		$text = preg_replace( '#([a-zA-Z]:[\\\\/](?:Users|home)[\\\\/][^\\\\/]+)#i', '[USER_HOME]', $text );
 
@@ -257,10 +253,7 @@ class Migrate_Lift_Activity_Logger {
 	 * @return string
 	 */
 	protected static function get_log_path() {
-		if ( function_exists( 'migrate_lift_dir' ) ) {
-			return migrate_lift_dir( self::LOG_FILE );
-		}
-		return untrailingslashit( WP_CONTENT_DIR ) . '/migrate-lift-files/' . self::LOG_FILE;
+		return migrate_lift_dir( self::LOG_FILE );
 	}
 
 	/**

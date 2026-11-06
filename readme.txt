@@ -1,7 +1,7 @@
 === MigrateLift – Migration, Backup & Restore ===
 Contributors: bestwpexpert
 Tags: migration, backup, restore, export, import
-Requires at least: 6.0
+Requires at least: 6.6
 Tested up to: 7.1
 Requires PHP: 7.4
 Stable tag: 1.0.0
@@ -49,6 +49,10 @@ For recurring backups instead of a site migration, configure the daily backup sc
 * Clone a live site to a staging or development environment.
 * Schedule daily WordPress backups and manage retained archives.
 
+= Source Code =
+
+The admin screens are built with `@wordpress/scripts`. The source is in the `src` folder of this plugin and at https://github.com/Razibul-Hasan/migrate-lift. To rebuild it, run `npm install` and then `npm run build`.
+
 **Important:** A restore replaces destination site data. Keep a separate verified backup before restoring or migrating a production website. For sites with active orders, bookings, or other frequently changing data, plan the migration carefully to avoid losing new changes.
 
 == Installation ==
@@ -75,7 +79,7 @@ Yes. Use the Import tab to upload a compatible .tgz or .zip archive, review the 
 
 = Does MigrateLift support direct WordPress site-to-site migration? =
 
-Yes. You can pair a source and destination WordPress installation and transfer an archive directly over HTTPS. The transfer uses authenticated pairing and archive integrity checks. The destination site is not changed until you confirm the restore.
+Yes. You can pair a source and destination WordPress installation and transfer an archive directly over HTTPS, so both sites need a valid HTTPS address. The transfer uses authenticated pairing and archive integrity checks, and it only sends data to the site you paired with. Keep the migration screen open while it runs. The destination site is not changed until you confirm the restore.
 
 = Does the plugin support automatic URL replacement? =
 

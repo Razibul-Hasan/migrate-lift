@@ -163,7 +163,7 @@ export async function runJob( action, initialFields = {}, onProgress = null ) {
  * @param {Function} onProgress Callback receiving progress updates.
  * @return {Promise<Object>} Completed job result.
  */
-export async function runRestJob( kind, params = {}, onProgress = null ) {
+export async function runRestJob( kind, params = {}, onProgress = null, existingJobId = null ) {
 	const restBase = cfg.restUrl || '/wp-json/migrate-lift/v1/';
 	const headers = {
 		'Content-Type': 'application/json',
@@ -172,24 +172,35 @@ export async function runRestJob( kind, params = {}, onProgress = null ) {
 		headers[ 'X-WP-Nonce' ] = cfg.restNonce;
 	}
 
-	// 1. Create the job.
-	const createRes = await fetch( `${ restBase }jobs`, {
-		method: 'POST',
-		headers,
-		credentials: 'same-origin',
-		body: JSON.stringify( { kind, params } ),
-	} );
+	let jobId = existingJobId;
+	let job = null;
 
-	if ( ! createRes.ok ) {
-		const errJson = await createRes.json().catch( () => null );
-		throw new Error( ( errJson && ( errJson.message || errJson.data?.message ) ) || `HTTP ${ createRes.status }: Failed to create job.` );
+	// 1. Create the job if not attaching to existing one.
+	if ( ! jobId ) {
+		const createRes = await fetch( `${ restBase }jobs`, {
+			method: 'POST',
+			headers,
+			credentials: 'same-origin',
+			body: JSON.stringify( { kind, params } ),
+		} );
+
+		if ( ! createRes.ok ) {
+			const errJson = await createRes.json().catch( () => null );
+			const msg = ( errJson && ( errJson.message || errJson.data?.message ) ) || `HTTP ${ createRes.status }: Failed to create job.`;
+			const err = new Error( msg );
+			if ( errJson?.data?.job ) {
+				err.activeJob = errJson.data.job;
+				err.activeJobId = errJson.data.job.id;
+			}
+			throw err;
+		}
+
+		const createData = await createRes.json();
+		job = createData.data || createData;
+		jobId = job.id;
 	}
 
-	const createData = await createRes.json();
-	const job = createData.data || createData;
-	const jobId = job.id;
-
-	if ( onProgress ) {
+	if ( onProgress && job ) {
 		onProgress( {
 			job,
 			progress: job.percentage || 0,
@@ -331,7 +342,11 @@ export function getRestUrl( endpoint = '' ) {
 	if ( ! base.endsWith( '/' ) ) {
 		base += '/';
 	}
-	const clean = endpoint.replace( /^\/?(migrate-lift\/v1\/)?/, '' );
+	let clean = endpoint.replace( /^\/?(migrate-lift\/v1\/)?/, '' );
+	// With plain permalinks the base already has a query string (?rest_route=...).
+	if ( base.includes( '?' ) ) {
+		clean = clean.replace( '?', '&' );
+	}
 	return base + clean;
 }
 
@@ -728,20 +743,53 @@ export async function fetchRestoreDryRun( fileName ) {
 /**
  * Creates and verifies a destination safety recovery checkpoint snapshot.
  */
-export async function createRecoveryCheckpoint() {
-	const res = await fetch( getRestUrl( 'restore/checkpoint' ), {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'X-WP-Nonce': cfg.restNonce || '',
-		},
-		credentials: 'same-origin',
-	} );
-	const json = await res.json();
-	if ( ! res.ok || ! json.success ) {
-		throw new Error( json.message || 'Failed to create recovery checkpoint.' );
+export async function createRecoveryCheckpoint( onProgress = null ) {
+	return runCheckpoint( 'restore/checkpoint', {}, onProgress );
+}
+
+/**
+ * Creates a full recovery checkpoint on the paired destination site, one step at a time.
+ *
+ * @param {string}   pairId     Destination pair ID.
+ * @param {Function} onProgress Called with each step's progress and message.
+ */
+export async function createRemoteRecoveryCheckpoint( pairId, onProgress = null ) {
+	return runCheckpoint( 'pair/remote-checkpoint', { pair_id: pairId }, onProgress );
+}
+
+/**
+ * Drives a checkpoint job until it finishes, so hosts with short time limits work.
+ *
+ * @param {string}   route      REST route.
+ * @param {Object}   body       Extra request fields.
+ * @param {Function} onProgress Progress callback.
+ */
+async function runCheckpoint( route, body, onProgress ) {
+	let jobId = '';
+	for ( ;; ) {
+		const res = await fetch( getRestUrl( route ), {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/json',
+				'X-WP-Nonce': cfg.restNonce || '',
+			},
+			credentials: 'same-origin',
+			body: JSON.stringify( { ...body, job_id: jobId } ),
+		} );
+		const json = await res.json();
+		if ( ! res.ok || ! json.success ) {
+			throw new Error( json.message || 'Failed to create recovery checkpoint.' );
+		}
+		const step = json.data;
+		jobId = step.job_id;
+		if ( onProgress ) {
+			onProgress( step );
+		}
+		if ( step.done ) {
+			return step.checkpoint;
+		}
+		await sleep( 300 );
 	}
-	return json.data;
 }
 
 /**
@@ -825,7 +873,7 @@ export async function executeRestoreWizard( fileName, confirmHost, options = {} 
 }
 
 /**
- * Generates a short-lived single-use pairing token on destination (Part 13).
+ * Generates a short-lived single-use pairing token on destination.
  */
 export async function generatePairingToken() {
 	const res = await fetch( getRestUrl( 'pair/token' ), {
@@ -844,7 +892,7 @@ export async function generatePairingToken() {
 }
 
 /**
- * Initiates handshake pairing connection to destination site (Part 13).
+ * Initiates handshake pairing connection to destination site.
  *
  * @param {string} pairingKey Base64 encoded pairing key string.
  */
@@ -866,7 +914,7 @@ export async function connectSite( pairingKey ) {
 }
 
 /**
- * Fetches list of paired sites (Part 13).
+ * Fetches list of paired sites.
  */
 export async function fetchPairingStatus() {
 	const res = await fetch( getRestUrl( 'pair/status' ), {
@@ -883,7 +931,7 @@ export async function fetchPairingStatus() {
 }
 
 /**
- * Revokes an existing pairing connection (Part 13).
+ * Revokes an existing pairing connection.
  *
  * @param {string} pairId Unique pair identifier.
  */
@@ -905,7 +953,7 @@ export async function revokePairing( pairId ) {
 }
 
 /**
- * Verifies round-trip latency and connectivity with paired site (Part 13).
+ * Verifies round-trip latency and connectivity with paired site.
  *
  * @param {string} pairId Unique pair identifier.
  */
@@ -927,7 +975,7 @@ export async function verifyPairing( pairId ) {
 }
 
 /**
- * Starts direct server-to-server transfer background job (Part 14).
+ * Starts direct server-to-server transfer background job.
  *
  * @param {string} pairId Paired destination ID.
  * @param {string} archive Archive filename to stream.
@@ -950,7 +998,29 @@ export async function startDirectTransfer( pairId, archive ) {
 }
 
 /**
- * Polls status of direct transfer background job (Part 14).
+ * Runs one step of a direct transfer job. The transfer only advances while this is called.
+ *
+ * @param {string} jobId Unique transfer job ID.
+ */
+export async function stepDirectTransfer( jobId ) {
+	const res = await fetch( getRestUrl( `jobs/${ encodeURIComponent( jobId ) }/step` ), {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json',
+			'X-WP-Nonce': cfg.restNonce || '',
+		},
+		credentials: 'same-origin',
+		body: JSON.stringify( {} ),
+	} );
+	const json = await res.json();
+	if ( ! res.ok || ! json.success ) {
+		throw new Error( json.message || 'Transfer step failed.' );
+	}
+	return json.data;
+}
+
+/**
+ * Polls status of direct transfer background job.
  *
  * @param {string} jobId Unique transfer job ID.
  */
@@ -969,7 +1039,7 @@ export async function fetchTransferStatus( jobId ) {
 }
 
 /**
- * Cancels active direct transfer job (Part 14).
+ * Cancels active direct transfer job.
  *
  * @param {string} jobId Unique transfer job ID.
  */
@@ -991,7 +1061,7 @@ export async function cancelTransfer( jobId ) {
 }
 
 /**
- * Requests remote preflight checks from paired destination (Part 15).
+ * Requests remote preflight checks from paired destination.
  *
  * @param {string} pairId Destination pair ID.
  * @param {string} fileName Archive filename.
@@ -1014,7 +1084,7 @@ export async function fetchRemotePreflight( pairId, fileName ) {
 }
 
 /**
- * Requests remote diff preview from paired destination (Part 15).
+ * Requests remote diff preview from paired destination.
  *
  * @param {string} pairId Destination pair ID.
  * @param {string} fileName Archive filename.
@@ -1046,7 +1116,7 @@ export async function fetchRemoteDiff( pairId, fileName, fileMode = 'overwrite_m
 }
 
 /**
- * Executes remote restore apply on paired destination site (Part 15).
+ * Executes remote restore apply on paired destination site.
  *
  * @param {string} pairId Destination pair ID.
  * @param {string} fileName Archive filename.

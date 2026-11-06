@@ -4,7 +4,7 @@
 > **Product Name:** Migrate Lift – WordPress Migration, Backup & Restore  
 > **Plugin Slug:** `migrate-lift`  
 > **Text Domain:** `migrate-lift`  
-> **Version:** 1.0.1  
+> **Version:** 1.0.0  
 
 ---
 

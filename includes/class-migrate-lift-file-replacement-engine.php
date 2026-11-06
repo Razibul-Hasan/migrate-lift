@@ -152,7 +152,7 @@ class Migrate_Lift_File_Replacement_Engine {
 			throw new Exception( esc_html__( 'Archive file not found in storage library.', 'migrate-lift' ) );
 		}
 
-		$content_root = untrailingslashit( WP_CONTENT_DIR );
+		$content_root = migrate_lift_content_dir();
 		$is_zip       = (bool) preg_match( '/\.zip$/i', $archive_path );
 
 		$archive_files = array(); // rel_path => size
@@ -424,10 +424,10 @@ class Migrate_Lift_File_Replacement_Engine {
 			}
 		}
 
-		$id           = uniqid();
+		$id           = wp_generate_password( 20, false, false );
 		$staging_dir  = migrate_lift_dir( 'staging/restore-files-' . $id );
 		$rollback_dir = migrate_lift_dir( 'staging/rollback-files-' . $id );
-		$content_root = defined( 'WP_CONTENT_DIR' ) ? untrailingslashit( constant( 'WP_CONTENT_DIR' ) ) : '';
+		$content_root = migrate_lift_content_dir();
 
 		wp_mkdir_p( $staging_dir );
 		wp_mkdir_p( $rollback_dir );

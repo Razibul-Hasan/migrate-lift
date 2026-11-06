@@ -20,6 +20,57 @@ define( 'MIGRATE_LIFT_TOKEN', '__MIGRATE_LIFT_PREFIX__' );
 define( 'MIGRATE_LIFT_STORE', 'migrate-lift-files' );
 
 /**
+ * Returns the wp-content folder this site really uses, without a trailing slash.
+ *
+ * A migration has to read and replace the whole of wp-content, including when it has been moved
+ * in wp-config.php. WordPress has no function that returns this path, so this is the single place
+ * that reads the constant.
+ *
+ * @return string
+ */
+function migrate_lift_content_dir() {
+	return untrailingslashit( WP_CONTENT_DIR );
+}
+
+/**
+ * Returns the folder WordPress is installed in, with a trailing slash.
+ *
+ * Core reads .maintenance from here, and imports use it to rewrite old server paths. get_home_path()
+ * is a different folder when WordPress lives in a subdirectory, so this is the single place that
+ * reads the constant.
+ *
+ * @return string
+ */
+function migrate_lift_root_dir() {
+	return ABSPATH;
+}
+
+/**
+ * Returns the path of a working folder inside storage. The folder name ends in a random value kept
+ * on disk, so on servers that ignore .htaccess its contents cannot be found by URL. It is kept on
+ * disk rather than in the database because an import replaces the database part way through.
+ *
+ * @param string $name Base name of the folder.
+ * @param string $sub  Optional relative path inside the folder.
+ * @return string
+ */
+function migrate_lift_tmp( $name, $sub = '' ) {
+	static $key = null;
+	if ( null === $key ) {
+		$file = migrate_lift_dir( 'storage-key.php' );
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_get_contents
+		$raw = is_file( $file ) ? (string) file_get_contents( $file ) : '';
+		$key = trim( (string) substr( $raw, (int) strpos( $raw, "\n" ) + 1 ) );
+		if ( ! preg_match( '/^[A-Za-z0-9]{32}$/', $key ) ) {
+			$key = wp_generate_password( 32, false, false );
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+			file_put_contents( $file, "<?php exit; ?>\n" . $key, LOCK_EX );
+		}
+	}
+	return migrate_lift_dir( $name . '-' . $key . ( '' === $sub ? '' : '/' . $sub ) );
+}
+
+/**
  * Returns the storage folder (or a path inside it), creating and locking it down on first use.
  *
  * @param string $sub Optional relative path.
@@ -27,7 +78,7 @@ define( 'MIGRATE_LIFT_STORE', 'migrate-lift-files' );
  */
 if ( ! function_exists( 'migrate_lift_dir' ) ) {
 	function migrate_lift_dir( $sub = '' ) {
-		$dir = untrailingslashit( (string) constant( 'WP_CONTENT_DIR' ) ) . '/' . MIGRATE_LIFT_STORE;
+		$dir = migrate_lift_content_dir() . '/' . MIGRATE_LIFT_STORE;
 
 		if ( ! is_dir( $dir ) ) {
 			wp_mkdir_p( $dir );
@@ -37,8 +88,6 @@ if ( ! function_exists( 'migrate_lift_dir' ) ) {
 			file_put_contents( $dir . '/index.php', "<?php\n// Silence is golden.\n" );
 			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents, PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite -- Protected storage directory lockdown file.
 			file_put_contents( $dir . '/.htaccess', "<IfModule mod_authz_core.c>\nRequire all denied\n</IfModule>\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n" );
-			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents, PluginCheck.CodeAnalysis.WriteFile.PluginDirectoryWrite -- Protected storage directory lockdown file.
-			file_put_contents( $dir . '/web.config', "<configuration>\n<system.webServer>\n<authorization>\n<deny users=\"*\" />\n</authorization>\n</system.webServer>\n</configuration>\n" );
 		}
 
 		return '' === $sub ? $dir : $dir . '/' . $sub;
@@ -141,46 +190,85 @@ function migrate_lift_progress( $progress, $message, $extra = array() ) {
 }
 
 /**
- * Returns the raw mysqli link. wpdb's own query() rewrites some queries, so the dump and import bypass it.
+ * Runs a statement through wpdb and throws on error. Errors are thrown rather than printed, so
+ * they cannot break the JSON response of a running step.
  *
- * @return mysqli
- */
-function migrate_lift_db() {
-	global $wpdb;
-	if ( empty( $wpdb->dbh ) && method_exists( $wpdb, 'db_connect' ) ) {
-		$wpdb->db_connect();
-	}
-	if ( ! $wpdb->dbh instanceof mysqli ) {
-		throw new Exception( esc_html__( 'Migrate Lift needs the mysqli PHP extension.', 'migrate-lift' ) );
-	}
-	return $wpdb->dbh;
-}
-
-/**
- * Runs a query and throws on error.
+ * Identifiers in $sql are quoted with migrate_lift_name() and values with migrate_lift_e().
  *
  * @param string $sql SQL.
- * @return mysqli_result|bool
+ * @return int|bool
  */
 function migrate_lift_q( $sql ) {
-	// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_query
-	$result = mysqli_query( migrate_lift_db(), $sql );
+	global $wpdb;
+	$suppress = $wpdb->suppress_errors( true );
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery -- Whole-site dump and restore on dynamic tables; see the docblock.
+	$result = $wpdb->query( $sql );
+	$wpdb->suppress_errors( $suppress );
 	if ( false === $result ) {
-		// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_error
-		throw new Exception( esc_html( 'Database error: ' . mysqli_error( migrate_lift_db() ) . ' in: ' . substr( $sql, 0, 200 ) ) );
+		throw new Exception( esc_html( 'Database error: ' . $wpdb->last_error . ' in: ' . substr( $sql, 0, 200 ) ) );
 	}
 	return $result;
 }
 
 /**
- * Quotes a value for SQL.
+ * Returns all rows of a query and throws on error. wpdb's buffers are released straight away,
+ * so a batch of large rows is only held in memory once while it is processed.
+ *
+ * @param string $sql    SQL.
+ * @param string $output ARRAY_N (values in column order) or ARRAY_A.
+ * @return array
+ */
+function migrate_lift_rows( $sql, $output = ARRAY_N ) {
+	global $wpdb;
+	$suppress = $wpdb->suppress_errors( true );
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery -- Whole-site dump and restore on dynamic tables; see migrate_lift_q().
+	$rows  = $wpdb->get_results( $sql, $output );
+	$error = $wpdb->last_error;
+	$wpdb->suppress_errors( $suppress );
+	$wpdb->flush();
+	if ( '' !== $error ) {
+		throw new Exception( esc_html( 'Database error: ' . $error . ' in: ' . substr( $sql, 0, 200 ) ) );
+	}
+	return (array) $rows;
+}
+
+/**
+ * Chooses the row count for the next dump batch. It grows while rows are small and shrinks when
+ * they are large, because a batch has to fit in PHP memory on hosts with low limits.
+ *
+ * @param int $batch Size of the batch just read.
+ * @param int $bytes Bytes that batch produced.
+ * @param int $max   Largest allowed batch.
+ * @return int
+ */
+function migrate_lift_next_batch( $batch, $bytes, $max ) {
+	if ( $bytes > 4 * MB_IN_BYTES ) {
+		return max( 10, (int) floor( $batch / 2 ) );
+	}
+	return min( $max, $batch * 2 );
+}
+
+/**
+ * Quotes a value for SQL. The result is also written to database.sql, where wpdb's placeholder
+ * escape for % would corrupt the data, so that escape is removed here.
  *
  * @param string|null $value Value.
  * @return string
  */
 function migrate_lift_e( $value ) {
-	// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_real_escape_string
-	return null === $value ? 'NULL' : "'" . mysqli_real_escape_string( migrate_lift_db(), (string) $value ) . "'";
+	global $wpdb;
+	return null === $value ? 'NULL' : "'" . $wpdb->remove_placeholder_escape( esc_sql( (string) $value ) ) . "'";
+}
+
+/**
+ * Writes a BIT value as a SQL literal. The mysqlnd driver returns BIT as a decimal string such as
+ * "165", which has to stay a plain number; other drivers return the raw bytes.
+ *
+ * @param string $value Value read from a BIT column.
+ * @return string
+ */
+function migrate_lift_bit_literal( $value ) {
+	return ctype_digit( (string) $value ) ? (string) $value : '0x' . bin2hex( $value );
 }
 
 /**
@@ -190,14 +278,10 @@ function migrate_lift_e( $value ) {
  * @return array
  */
 function migrate_lift_col( $sql ) {
-	$result = migrate_lift_q( $sql );
-	$out    = array();
-	// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_fetch_row, WordPress.CodeAnalysis.AssignmentInCondition.FoundInWhileCondition
-	while ( $row = mysqli_fetch_row( $result ) ) {
+	$out = array();
+	foreach ( migrate_lift_rows( $sql ) as $row ) {
 		$out[] = $row[0];
 	}
-	// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_free_result
-	mysqli_free_result( $result );
 	return $out;
 }
 
@@ -218,39 +302,59 @@ function migrate_lift_db_session() {
  */
 function migrate_lift_tables( $prefix ) {
 	global $wpdb;
-	$like = migrate_lift_e( $wpdb->esc_like( $prefix ) . '%' );
-	return migrate_lift_col( "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME LIKE $like ORDER BY TABLE_NAME" );
+	$tables = migrate_lift_col(
+		$wpdb->prepare(
+			"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME LIKE %s ORDER BY TABLE_NAME",
+			$wpdb->esc_like( $prefix ) . '%'
+		)
+	);
+
+	// A prefix such as wp_ also matches wp_shop_options. Those tables belong to another WordPress
+	// site sharing this database, and a backup or restore here must leave them alone.
+	foreach ( $tables as $table ) {
+		if ( preg_match( '/^(.+_)options$/', $table, $match ) && $match[1] !== $prefix && in_array( $match[1] . 'posts', $tables, true ) ) {
+			$other  = $match[1];
+			$tables = array_values(
+				array_filter(
+					$tables,
+					function ( $name ) use ( $other ) {
+						return 0 !== strpos( $name, $other );
+					}
+				)
+			);
+		}
+	}
+
+	return $tables;
 }
 
 /**
  * Column details of a table.
  *
  * @param string $table Table.
- * @return array cols, bin (hex-encode on dump), text (search-replace targets), pk.
+ * @return array cols, bin (hex-encode on dump), bit (see migrate_lift_bit_literal()), text (search-replace targets), pk.
  */
 function migrate_lift_table_info( $table ) {
-	$info   = array(
+	$info = array(
 		'cols' => array(),
 		'bin'  => array(),
+		'bit'  => array(),
 		'text' => array(),
 		'pk'   => array(),
 	);
-	$result = migrate_lift_q( 'SHOW COLUMNS FROM ' . migrate_lift_name( $table ) );
-	// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_fetch_assoc, WordPress.CodeAnalysis.AssignmentInCondition.FoundInWhileCondition
-	while ( $c = mysqli_fetch_assoc( $result ) ) {
+	foreach ( migrate_lift_rows( 'SHOW COLUMNS FROM ' . migrate_lift_name( $table ), ARRAY_A ) as $c ) {
 		if ( false !== stripos( (string) $c['Extra'], 'GENERATED' ) ) {
 			continue; // Generated columns can't be inserted.
 		}
 		$type           = strtolower( $c['Type'] );
 		$info['cols'][] = $c['Field'];
-		$info['bin'][]  = (bool) preg_match( '/^((tiny|medium|long)?blob|(var)?binary|bit)/', $type );
+		$info['bin'][]  = (bool) preg_match( '/^((tiny|medium|long)?blob|(var)?binary)/', $type );
+		$info['bit'][]  = 0 === strpos( $type, 'bit' );
 		$info['text'][] = (bool) preg_match( '/^((var)?char|(tiny|medium|long)?text|json)/', $type );
 		if ( 'PRI' === $c['Key'] ) {
 			$info['pk'][] = $c['Field'];
 		}
 	}
-	// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_free_result
-	mysqli_free_result( $result );
 	return $info;
 }
 
@@ -358,6 +462,16 @@ function migrate_lift_truncate( $file, $size ) {
 }
 
 /**
+ * Whether a name is a plain archive file name, with no path and no other file type.
+ *
+ * @param string $name File name.
+ * @return bool
+ */
+function migrate_lift_is_archive_name( $name ) {
+	return 1 === preg_match( '/^[A-Za-z0-9][A-Za-z0-9._-]*\.(tgz|tar\.gz|zip)$/i', (string) $name );
+}
+
+/**
  * Resolves an archive name to its path in the storage folder.
  *
  * @param string $name File name.
@@ -365,7 +479,7 @@ function migrate_lift_truncate( $file, $size ) {
  */
 function migrate_lift_archive_path( $name ) {
 	$name = basename( (string) $name );
-	if ( ! preg_match( '/^[A-Za-z0-9][A-Za-z0-9._-]*\.(tgz|tar\.gz|zip)$/i', $name ) || ! is_file( migrate_lift_dir( $name ) ) ) {
+	if ( ! migrate_lift_is_archive_name( $name ) || ! is_file( migrate_lift_dir( $name ) ) ) {
 		throw new Exception( esc_html__( 'Archive not found.', 'migrate-lift' ) );
 	}
 	return migrate_lift_dir( $name );
@@ -570,7 +684,7 @@ function migrate_lift_site_info() {
 	return array(
 		'home'    => untrailingslashit( get_option( 'home' ) ),
 		'siteurl' => untrailingslashit( get_option( 'siteurl' ) ),
-		'abspath' => ABSPATH,
+		'abspath' => migrate_lift_root_dir(),
 		'prefix'  => $wpdb->prefix,
 		'plugin'  => plugin_basename( MIGRATE_LIFT_FILE ),
 		'wp'      => get_bloginfo( 'version' ),

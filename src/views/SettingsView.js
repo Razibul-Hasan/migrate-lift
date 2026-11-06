@@ -1,7 +1,7 @@
 /**
  * SettingsView Component
  * Hosts maintenance tools, storage diagnostics, and system settings.
- * Implements Part 06: Compression & Granular Exclusions management.
+ * Implements Compression & Granular Exclusions management.
  */
 import { useState, useEffect } from '@wordpress/element';
 import { __ } from '@wordpress/i18n';
@@ -147,7 +147,7 @@ export default function SettingsView( { isBusy, setBusy } ) {
 			/>
 
 			<div style={ { display: 'flex', flexDirection: 'column', gap: '24px' } }>
-				{ /* Compression & Exclusions Section (Part 06) */ }
+				{ /* Compression & Exclusions Section */ }
 				<SectionCard
 					title={ __( 'Compression & Granular Exclusions', 'migrate-lift' ) }
 					subtitle={ __( 'Archive formats, multi-mode compression ratios, and safety rules', 'migrate-lift' ) }

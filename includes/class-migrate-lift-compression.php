@@ -2,7 +2,7 @@
 /**
  * Compression Optimization & Exclusion Management.
  *
- * Implements Part 06:
+ * Implements:
  * - Multi-mode compression (Balanced, Smallest practical, Fastest)
  * - Extension-aware compression choices (Media bypass for already-compressed assets)
  * - Widely portable archive format selection (TAR.GZ / ZIP)
@@ -78,12 +78,15 @@ class Migrate_Lift_Compression {
 		'migrate-lift-files',
 		'ai1wm-backups',
 		'updraft',
+		'updraft*',
 		'backups-dup-lite',
 		'wpvividbackups',
 		'backwpup-*',
+		'uploads/updraft*',
+		'uploads/updraftplus*',
 		'uploads/backwpup*',
 		'uploads/wpvivid*',
-		'uploads/ai1wm-backups',
+		'uploads/ai1wm-backups*',
 		'uploads/siteground-optimizer-assets',
 	);
 

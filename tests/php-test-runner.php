@@ -13,6 +13,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 // phpcs:ignoreFile -- Test suite harness.
 
+define( 'MIGRATE_LIFT_TESTING', true );
+
 // Define mock WordPress environment.
 define( 'WP_CONTENT_DIR', sys_get_temp_dir() . '/ml_test_content_' . uniqid() );
 
@@ -70,6 +72,7 @@ function apply_filters( $tag, $value, ...$args ) {
 if ( ! defined( 'MINUTE_IN_SECONDS' ) ) define( 'MINUTE_IN_SECONDS', 60 );
 if ( ! defined( 'HOUR_IN_SECONDS' ) ) define( 'HOUR_IN_SECONDS', 3600 );
 if ( ! defined( 'DAY_IN_SECONDS' ) ) define( 'DAY_IN_SECONDS', 86400 );
+if ( ! defined( 'MB_IN_BYTES' ) ) define( 'MB_IN_BYTES', 1048576 );
 
 function wp_timezone() {
 	return new DateTimeZone( 'America/New_York' );
@@ -1446,6 +1449,29 @@ assert_test( hash_equals( $chunk_sha, hash_file( 'sha256', $chunk_file ) ), 'Chu
 // Clean up incoming session
 Migrate_Lift_Direct_Transfer_Engine::cleanup_incoming_session( $transfer_id );
 assert_test( ! is_dir( $session_dir ), 'Cleans up temporary transfer session directory' );
+
+echo "\nTest 39: Transfer and Storage Hardening\n";
+assert_test( true === migrate_lift_is_archive_name( 'site-20260101-abc.tgz' ), 'Accepts a normal archive name' );
+foreach ( array( 'shell.php', 'index.php', 'import-state.php', 'x.phtml', '../a.tgz', '.htaccess', 'a.tgz.php' ) as $bad_name ) {
+	assert_test( false === migrate_lift_is_archive_name( $bad_name ), "Rejects archive name: $bad_name" );
+}
+$tmp_path = migrate_lift_tmp( 'export-tmp', 'database.sql' );
+assert_test( false === strpos( $tmp_path, '/export-tmp/' ), 'Working folder name is not guessable' );
+assert_test( 1 === preg_match( '#/export-tmp-[A-Za-z0-9]{32}/database\.sql$#', $tmp_path ), 'Working folder carries the random key' );
+assert_test( $tmp_path === migrate_lift_tmp( 'export-tmp', 'database.sql' ), 'Working folder stays the same across calls' );
+assert_test( is_wp_error( Migrate_Lift_Site_Pairing::validate_target_url( 'http://93.184.216.34/' ) ), 'Rejects plain HTTP to a public address' );
+assert_test( is_wp_error( Migrate_Lift_Site_Pairing::validate_target_url( 'https://[fd00::1]/' ) ), 'Blocks IPv6 unique-local address' );
+assert_test( is_wp_error( Migrate_Lift_Site_Pairing::validate_target_url( 'https://[fe80::1]/' ) ), 'Blocks IPv6 link-local address' );
+assert_test( is_wp_error( Migrate_Lift_Site_Pairing::validate_target_url( 'https://100.64.0.1/' ) ), 'Blocks carrier-grade NAT range' );
+assert_test( true === Migrate_Lift_Site_Pairing::validate_target_url( 'https://93.184.216.34/' ), 'Allows HTTPS to a public address' );
+
+echo "\nTest 40: Database Dump Helpers\n";
+assert_test( '165' === migrate_lift_bit_literal( '165' ), 'BIT value from mysqlnd stays a plain number' );
+assert_test( '0xa5' === migrate_lift_bit_literal( "\xA5" ), 'BIT value as raw bytes becomes a hex literal' );
+assert_test( 200 === migrate_lift_next_batch( 100, 1000, 500 ), 'Dump batch grows while rows are small' );
+assert_test( 500 === migrate_lift_next_batch( 400, 1000, 500 ), 'Dump batch never passes the maximum' );
+assert_test( 50 === migrate_lift_next_batch( 100, 5 * MB_IN_BYTES, 500 ), 'Dump batch shrinks when rows are large' );
+assert_test( 10 === migrate_lift_next_batch( 10, 5 * MB_IN_BYTES, 500 ), 'Dump batch never drops below the minimum' );
 
 // Clean up test temporary directory.
 function ml_rmdir_recursive( $dir ) {

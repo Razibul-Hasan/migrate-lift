@@ -89,7 +89,7 @@ export const PREVIEW_FIXTURE = {
 	migrationJob: null,
 	protectionSettings: {
 		scheduleEnabled: false,
-		scheduleFrequency: 'Every day at 2:00 AM (Roadmap Part 08)',
+		scheduleFrequency: 'Every day at 2:00 AM',
 		retentionCopies: 7,
 		compressionMode: 'Standard gzip (.tgz)',
 		exclusionsConfigured: true,

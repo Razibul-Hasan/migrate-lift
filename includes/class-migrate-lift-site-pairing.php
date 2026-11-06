@@ -1,6 +1,6 @@
 <?php
 /**
- * Site Pairing & Security Engine (Part 13).
+ * Site Pairing & Security Engine.
  *
  * Implements cryptographically secure, time-limited, single-use site pairing,
  * SSRF target validation, and HMAC-SHA256 authenticated cross-site communications
@@ -94,6 +94,68 @@ class Migrate_Lift_Site_Pairing {
 	}
 
 	/**
+	 * Whether private addresses and plain HTTP are allowed, which is only for local development.
+	 *
+	 * @param string $url Target URL.
+	 * @return bool
+	 */
+	public static function is_local_transfer_allowed( $url = '' ) {
+		$allow_local = defined( 'MIGRATE_LIFT_ALLOW_LOCAL_TRANSFER' ) && MIGRATE_LIFT_ALLOW_LOCAL_TRANSFER;
+		if ( function_exists( 'wp_get_environment_type' ) && 'local' === wp_get_environment_type() ) {
+			$allow_local = true;
+		}
+		return (bool) apply_filters( 'migrate_lift_allow_local_transfer', $allow_local, $url );
+	}
+
+	/**
+	 * Adds the safety options every cross-site request uses. WordPress checks the address again when
+	 * it connects, so a host name cannot be switched to an internal address after validation.
+	 *
+	 * @param array $args Request arguments.
+	 * @return array
+	 */
+	public static function request_args( array $args ) {
+		return array_merge(
+			array(
+				'redirection'        => 0, // Redirects could lead to an address that was never validated.
+				'sslverify'          => apply_filters( 'migrate_lift_ssl_verify', true ),
+				'reject_unsafe_urls' => ! self::is_local_transfer_allowed(),
+			),
+			$args
+		);
+	}
+
+	/**
+	 * Whether two URLs are on the same host and port.
+	 *
+	 * @param string $url_a First URL.
+	 * @param string $url_b Second URL.
+	 * @return bool
+	 */
+	protected static function is_same_host( $url_a, $url_b ) {
+		$a = wp_parse_url( (string) $url_a );
+		$b = wp_parse_url( (string) $url_b );
+		return ! empty( $a['host'] ) && ! empty( $b['host'] )
+			&& strtolower( $a['host'] ) === strtolower( $b['host'] )
+			&& (int) ( $a['port'] ?? 0 ) === (int) ( $b['port'] ?? 0 );
+	}
+
+	/**
+	 * Builds the URL of a route on the paired site, using the REST base that site reported so
+	 * custom REST prefixes and plain permalinks work.
+	 *
+	 * @param array  $pair    Paired site record.
+	 * @param string $subpath Route, such as /transfer/init.
+	 * @return string
+	 */
+	public static function remote_rest_url( $pair, $subpath ) {
+		$base = ! empty( $pair['rest_base'] )
+			? $pair['rest_base']
+			: untrailingslashit( $pair['remote_url'] ) . '/wp-json/' . MIGRATE_LIFT_REST_NAMESPACE;
+		return untrailingslashit( $base ) . $subpath;
+	}
+
+	/**
 	 * Validates a target URL against SSRF vulnerabilities (rejecting private/internal IP ranges
 	 * and cloud metadata services), unless local transfer mode is explicitly enabled.
 	 *
@@ -120,15 +182,13 @@ class Migrate_Lift_Site_Pairing {
 		}
 
 		// Allow local development overrides if explicitly defined or WP_ENVIRONMENT_TYPE is local.
-		$allow_local = false;
-		if ( defined( 'MIGRATE_LIFT_ALLOW_LOCAL_TRANSFER' ) && MIGRATE_LIFT_ALLOW_LOCAL_TRANSFER ) {
-			$allow_local = true;
-		}
-		if ( function_exists( 'wp_get_environment_type' ) && 'local' === wp_get_environment_type() ) {
-			$allow_local = true;
-		}
-		if ( apply_filters( 'migrate_lift_allow_local_transfer', $allow_local, $url ) ) {
+		if ( self::is_local_transfer_allowed( $url ) ) {
 			return true;
+		}
+
+		// Pairing keys and signing keys must never cross the internet unencrypted.
+		if ( 'https' !== $scheme ) {
+			return new WP_Error( 'https_required', __( 'Both sites must use HTTPS for a direct transfer.', 'migrate-lift' ) );
 		}
 
 		// Reject obvious localhost and loopback hostnames.
@@ -194,11 +254,15 @@ class Migrate_Lift_Site_Pairing {
 				if ( ( $long & 0xFFFF0000 ) === 0xA9FE0000 ) {
 					return new WP_Error( 'ssrf_cloud_metadata', __( 'Target IP resolves to link-local or cloud metadata service (169.254.0.0/16).', 'migrate-lift' ) );
 				}
-			} elseif ( filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) {
-				// IPv6 Loopback: ::1
-				if ( '::1' === $ip ) {
-					return new WP_Error( 'ssrf_loopback_ipv6', __( 'Target IP resolves to IPv6 loopback (::1).', 'migrate-lift' ) );
+				// Carrier-grade NAT: 100.64.0.0/10
+				if ( ( $long & 0xFFC00000 ) === 0x64400000 ) {
+					return new WP_Error( 'ssrf_private_network', __( 'Target IP resolves to private network space (100.64.0.0/10).', 'migrate-lift' ) );
 				}
+			}
+
+			// Everything else that is not a public address, including IPv6 loopback, link-local and unique-local.
+			if ( false === filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE ) ) {
+				return new WP_Error( 'ssrf_private_network', __( 'Target IP resolves to a private or reserved address.', 'migrate-lift' ) );
 			}
 		}
 
@@ -274,6 +338,11 @@ class Migrate_Lift_Site_Pairing {
 		$token       = sanitize_text_field( (string) $request->get_param( 'token' ) );
 		$source_url  = esc_url_raw( (string) $request->get_param( 'source_url' ) );
 		$source_name = sanitize_text_field( (string) $request->get_param( 'source_name' ) );
+		$source_rest = esc_url_raw( (string) $request->get_param( 'rest_base' ) );
+
+		if ( is_multisite() ) {
+			return new WP_Error( 'multisite_unsupported', __( 'Multisite is not supported.', 'migrate-lift' ), array( 'status' => 403 ) );
+		}
 
 		if ( empty( $token ) || empty( $source_url ) ) {
 			return new WP_Error( 'missing_params', __( 'Token and source_url parameters are required.', 'migrate-lift' ), array( 'status' => 400 ) );
@@ -306,6 +375,7 @@ class Migrate_Lift_Site_Pairing {
 			'role'        => 'destination',
 			'remote_url'  => $source_url,
 			'remote_name' => $source_name,
+			'rest_base'   => self::is_same_host( $source_rest, $source_url ) ? $source_rest : '',
 			'auth_key'    => $auth_key,
 			'paired_at'   => $paired_at,
 			'last_active' => $paired_at,
@@ -336,6 +406,7 @@ class Migrate_Lift_Site_Pairing {
 				'max_upload_size'   => wp_max_upload_size(),
 				'disk_free_space'   => $free_space,
 				'transfer_endpoint' => esc_url_raw( rest_url( MIGRATE_LIFT_REST_NAMESPACE . '/transfer' ) ),
+				'rest_base'         => esc_url_raw( rest_url( MIGRATE_LIFT_REST_NAMESPACE ) ),
 			)
 		);
 	}
@@ -352,34 +423,40 @@ class Migrate_Lift_Site_Pairing {
 			return $parsed;
 		}
 
-		$endpoint = $parsed['endpoint'];
-		$dest_url = $parsed['site_url'];
+		$endpoint = (string) $parsed['endpoint'];
+		$dest_url = (string) ( $parsed['site_url'] ?? '' );
 
-		// SSRF check destination URL.
-		$ssrf = self::validate_target_url( $dest_url );
-		if ( is_wp_error( $ssrf ) ) {
-			return $ssrf;
+		// SSRF check both URLs: the request goes to the endpoint, and it must belong to the site.
+		foreach ( array( $dest_url, $endpoint ) as $target ) {
+			$ssrf = self::validate_target_url( $target );
+			if ( is_wp_error( $ssrf ) ) {
+				return $ssrf;
+			}
+		}
+		if ( ! self::is_same_host( $endpoint, $dest_url ) ) {
+			return new WP_Error( 'pairing_endpoint_mismatch', __( 'This pairing key points to a different host than its site. Generate a new key on the destination site.', 'migrate-lift' ) );
 		}
 
 		$body = array(
 			'token'       => $parsed['token'],
 			'source_url'  => esc_url_raw( home_url() ),
 			'source_name' => get_bloginfo( 'name' ),
+			'rest_base'   => esc_url_raw( rest_url( MIGRATE_LIFT_REST_NAMESPACE ) ),
 			'wp_version'  => get_bloginfo( 'version' ),
 			'version'     => MIGRATE_LIFT_VERSION,
 		);
 
 		$response = wp_remote_post(
 			$endpoint,
-			array(
-				'headers'     => array(
-					'Content-Type' => 'application/json',
-					'Accept'       => 'application/json',
-				),
-				'body'        => wp_json_encode( $body ),
-				'timeout'     => 20,
-				'redirection' => 0, // Reject arbitrary redirects to avoid SSRF redirect smuggling
-				'sslverify'   => apply_filters( 'migrate_lift_ssl_verify', true ),
+			self::request_args(
+				array(
+					'headers' => array(
+						'Content-Type' => 'application/json',
+						'Accept'       => 'application/json',
+					),
+					'body'    => wp_json_encode( $body ),
+					'timeout' => 20,
+				)
 			)
 		);
 
@@ -404,6 +481,7 @@ class Migrate_Lift_Site_Pairing {
 
 		$pair_id  = sanitize_text_field( $data['pair_id'] );
 		$auth_key = sanitize_text_field( $data['auth_key'] );
+		$rest     = esc_url_raw( $data['rest_base'] ?? '' );
 		$now      = time();
 
 		$paired_sites = get_option( self::OPTION_PAIRED_SITES, array() );
@@ -416,6 +494,7 @@ class Migrate_Lift_Site_Pairing {
 			'role'              => 'source',
 			'remote_url'        => $dest_url,
 			'remote_name'       => sanitize_text_field( $data['destination_name'] ?? '' ),
+			'rest_base'         => self::is_same_host( $rest, $dest_url ) ? $rest : '',
 			'auth_key'          => $auth_key,
 			'destination_meta'  => array(
 				'wp_version'      => sanitize_text_field( $data['wp_version'] ?? '' ),
@@ -501,15 +580,7 @@ class Migrate_Lift_Site_Pairing {
 			return new WP_Error( 'signature_timestamp_expired', __( 'Request timestamp is outside the allowed 5-minute skew window.', 'migrate-lift' ), array( 'status' => 403 ) );
 		}
 
-		// 2. Nonce cache check (prevent replay attacks).
-		$nonce_transient = 'ml_sig_nonce_' . substr( hash( 'sha256', $nonce ), 0, 32 );
-		if ( get_transient( $nonce_transient ) ) {
-			return new WP_Error( 'replay_attack_detected', __( 'Signature nonce has already been used (replay detected).', 'migrate-lift' ), array( 'status' => 403 ) );
-		}
-		// Cache nonce for double the window (10 mins).
-		set_transient( $nonce_transient, 1, self::SIGNATURE_WINDOW * 2 );
-
-		// 3. Compute and verify expected HMAC signature with constant-time comparison.
+		// 2. Compute and verify expected HMAC signature with constant-time comparison.
 		$raw_body = $request->get_body();
 		$payload  = (string) $timestamp . '.' . $nonce . '.' . $raw_body;
 		$expected = hash_hmac( 'sha256', $payload, $pair['auth_key'] );
@@ -517,6 +588,14 @@ class Migrate_Lift_Site_Pairing {
 		if ( ! hash_equals( $expected, $signature ) ) {
 			return new WP_Error( 'invalid_signature', __( 'HMAC signature mismatch.', 'migrate-lift' ), array( 'status' => 403 ) );
 		}
+
+		// 3. Nonce cache check (prevent replay attacks).
+		$nonce_transient = 'migrate_lift_sig_' . substr( hash( 'sha256', $nonce ), 0, 32 );
+		if ( get_transient( $nonce_transient ) ) {
+			return new WP_Error( 'replay_attack_detected', __( 'Signature nonce has already been used (replay detected).', 'migrate-lift' ), array( 'status' => 403 ) );
+		}
+		// Cache nonce for double the window (10 mins).
+		set_transient( $nonce_transient, 1, self::SIGNATURE_WINDOW * 2 );
 
 		// Update last active timestamp.
 		self::update_last_active( $pair_id );
@@ -536,8 +615,7 @@ class Migrate_Lift_Site_Pairing {
 			return new WP_Error( 'pairing_not_found', __( 'Pairing not found.', 'migrate-lift' ) );
 		}
 
-		$dest_url = untrailingslashit( $pair['remote_url'] );
-		$endpoint = $dest_url . '/wp-json/' . MIGRATE_LIFT_REST_NAMESPACE . '/pair/ping';
+		$endpoint = self::remote_rest_url( $pair, '/pair/ping' );
 
 		$body_str = wp_json_encode( array( 'client_time' => time(), 'pair_id' => $pair_id ) );
 		$headers  = self::sign_request( $pair_id, $body_str );
@@ -551,12 +629,12 @@ class Migrate_Lift_Site_Pairing {
 		$start_time = microtime( true );
 		$response   = wp_remote_post(
 			$endpoint,
-			array(
-				'headers'     => $headers,
-				'body'        => $body_str,
-				'timeout'     => 15,
-				'redirection' => 0,
-				'sslverify'   => apply_filters( 'migrate_lift_ssl_verify', true ),
+			self::request_args(
+				array(
+					'headers' => $headers,
+					'body'    => $body_str,
+					'timeout' => 15,
+				)
 			)
 		);
 
@@ -603,20 +681,20 @@ class Migrate_Lift_Site_Pairing {
 
 		// Best-effort remote notification.
 		try {
-			$dest_url = untrailingslashit( $pair['remote_url'] );
-			$endpoint = $dest_url . '/wp-json/' . MIGRATE_LIFT_REST_NAMESPACE . '/pair/revoke-remote';
+			$endpoint = self::remote_rest_url( $pair, '/pair/revoke-remote' );
 			$body_str = wp_json_encode( array( 'pair_id' => $pair_id, 'revoked_at' => time() ) );
 			$headers  = self::sign_request( $pair_id, $body_str );
 			if ( ! is_wp_error( $headers ) ) {
 				$headers['Content-Type'] = 'application/json';
 				wp_remote_post(
 					$endpoint,
-					array(
-						'headers'     => $headers,
-						'body'        => $body_str,
-						'timeout'     => 5,
-						'redirection' => 0,
-						'blocking'    => false, // Non-blocking best effort
+					self::request_args(
+						array(
+							'headers'  => $headers,
+							'body'     => $body_str,
+							'timeout'  => 5,
+							'blocking' => false, // Non-blocking best effort.
+						)
 					)
 				);
 			}

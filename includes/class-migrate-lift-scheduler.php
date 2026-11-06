@@ -2,7 +2,7 @@
 /**
  * Automated Backup Scheduler & Retention Engine.
  *
- * Implements Part 08 Daily Backup Scheduler:
+ * Implements the Daily Backup Scheduler:
  * - Configurable cadence (Daily, Weekly, Manual) and site-timezone start time
  * - High-precision timezone/DST handling with DateTimeImmutable and wp_timezone()
  * - Safe WP-Cron scheduling with duplicate event prevention on activation/settings change
@@ -802,7 +802,7 @@ class Migrate_Lift_Scheduler {
 	public static function get_system_cron_info() {
 		$home_url   = function_exists( 'home_url' ) ? home_url() : '';
 		$cron_url   = untrailingslashit( $home_url ) . '/wp-cron.php?doing_wp_cron';
-		$abspath    = defined( 'ABSPATH' ) ? untrailingslashit( ABSPATH ) : '/path/to/wordpress';
+		$abspath    = untrailingslashit( migrate_lift_root_dir() );
 		$disable_wp = defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON;
 
 		return array(

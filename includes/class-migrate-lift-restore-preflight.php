@@ -9,7 +9,6 @@
  * - Verified destination recovery checkpoint snapshot creation with retention protection.
  * - Accurate dry-run change reporting for files and database tables.
  * - Explicit site confirmation requirement (exact hostname validation) preventing accidental site replacement.
- * - Strict non-destructive gating: destructive apply is locked until subsequent modules (Parts 11 & 12).
  *
  * @package MigrateLift
  */
@@ -137,7 +136,7 @@ class Migrate_Lift_Restore_Preflight {
 		}
 
 		// 4. Check: Disk Capacity for Staging + Safety Rollback Checkpoint.
-		$free_space = function_exists( 'disk_free_space' ) ? @disk_free_space( WP_CONTENT_DIR ) : false;
+		$free_space = function_exists( 'disk_free_space' ) ? @disk_free_space( migrate_lift_content_dir() ) : false;
 		$uncompressed_content_bytes = ! empty( $manifest['bytes'] ) ? (int) $manifest['bytes'] : ( filesize( $archive_path ) * 3 );
 
 		// Estimate current site size for rollback snapshot.
@@ -196,7 +195,7 @@ class Migrate_Lift_Restore_Preflight {
 		}
 
 		// 5. Check: File Permissions & Writability.
-		$content_writable = self::is_directory_writable( WP_CONTENT_DIR );
+		$content_writable = self::is_directory_writable( migrate_lift_content_dir() );
 		$store_dir        = function_exists( 'migrate_lift_dir' ) ? migrate_lift_dir() : '';
 		$store_writable   = ! empty( $store_dir ) && self::is_directory_writable( $store_dir );
 
@@ -396,162 +395,124 @@ class Migrate_Lift_Restore_Preflight {
 	}
 
 	/**
-	 * Creates and verifies a destination recovery checkpoint backup before any replacement occurs.
-	 * Registers the checkpoint as protected so retention pruning can never prune it.
+	 * Creates a complete recovery checkpoint in one go. Used where nothing can drive the steps,
+	 * such as WP-CLI; the admin screens call checkpoint_step() so hosts with short time limits work.
 	 *
 	 * @return array Checkpoint record.
-	 * @throws Exception On insufficient space or verification failure.
+	 * @throws Exception On insufficient space or backup failure.
 	 */
 	public static function create_recovery_checkpoint() {
-		// 1. Check storage capacity first.
-		$free_space = function_exists( 'disk_free_space' ) ? @disk_free_space( constant( 'WP_CONTENT_DIR' ) ) : false;
-		if ( false !== $free_space && $free_space < 104857600 ) { // Minimum 100 MB free required
-			throw new Exception( esc_html__( 'Cannot create recovery checkpoint: Insufficient disk space (less than 100 MB free).', 'migrate-lift' ) );
-		}
+		$job_id = '';
+		do {
+			$step = self::checkpoint_step( $job_id );
+			if ( is_wp_error( $step ) ) {
+				throw new Exception( esc_html( $step->get_error_message() ) );
+			}
+			$job_id = $step['job_id'];
+		} while ( empty( $step['done'] ) );
 
-		$site_slug = sanitize_title( get_bloginfo( 'name' ) );
-		if ( empty( $site_slug ) ) {
-			$site_slug = 'site';
-		}
+		return $step['checkpoint'];
+	}
 
-		$checkpoint_name = sprintf( 'recovery-checkpoint-%s-%s.tgz', $site_slug, wp_date( 'Ymd-His' ) );
-		$target_path     = migrate_lift_dir( $checkpoint_name );
+	/**
+	 * Runs one step of a recovery checkpoint: a full, verified backup of this site's database and
+	 * wp-content that is registered as protected once it finishes.
+	 *
+	 * @param string $job_id Job to continue, or empty to start a new checkpoint.
+	 * @return array|WP_Error Step result with done, job_id, progress, message and, when done, checkpoint.
+	 */
+	public static function checkpoint_step( $job_id = '' ) {
+		if ( empty( $job_id ) ) {
+			$free_space = function_exists( 'disk_free_space' ) ? @disk_free_space( migrate_lift_content_dir() ) : false;
+			if ( false !== $free_space && $free_space < 104857600 ) { // Minimum 100 MB free required.
+				return new WP_Error( 'checkpoint_disk_space', __( 'Cannot create recovery checkpoint: Insufficient disk space (less than 100 MB free).', 'migrate-lift' ), array( 'status' => 507 ) );
+			}
 
-		if ( class_exists( 'Migrate_Lift_Activity_Logger' ) ) {
+			$job = Migrate_Lift_Job_Engine::create_job( 'backup', array( 'recovery_checkpoint' => true ) );
+			if ( is_wp_error( $job ) ) {
+				return $job;
+			}
+			$job_id = $job['id'];
+
 			Migrate_Lift_Activity_Logger::info(
 				'recovery_checkpoint_started',
-				/* translators: %s: Recovery checkpoint archive name. */
-				sprintf( __( 'Creating safety recovery checkpoint snapshot: %s', 'migrate-lift' ), $checkpoint_name ),
-				array( 'checkpoint' => $checkpoint_name )
+				__( 'Creating a full recovery checkpoint of this site.', 'migrate-lift' ),
+				array( 'job_id' => $job_id ),
+				$job_id
 			);
 		}
 
-		// Create the checkpoint package using pure streaming Tar Writer.
-		try {
-			if ( ! class_exists( 'Migrate_Lift_Tar_Writer' ) ) {
-				require_once dirname( __FILE__ ) . '/class-migrate-lift-tar.php';
-			}
-
-			$tar = new Migrate_Lift_Tar_Writer( $target_path, 6 );
-
-			// 1. Add manifest
-			$manifest_data = array(
-				'format_version'    => '2.0',
-				'format'            => '2.0',
-				'type'              => 'recovery_checkpoint',
-				'home'              => untrailingslashit( home_url() ),
-				'siteurl'           => function_exists( 'site_url' ) ? untrailingslashit( site_url() ) : untrailingslashit( home_url() ),
-				'prefix'            => $GLOBALS['wpdb']->prefix,
-				'created_at'        => wp_date( 'c' ),
-				'created'           => wp_date( 'Y-m-d H:i:s' ),
-				'wp'                => get_bloginfo( 'version' ),
-				'php'               => PHP_VERSION,
-				'bytes'             => 0,
-				'files'             => 0,
-				'recovery_protected'=> true,
-			);
-			$manifest_json = wp_json_encode( $manifest_data );
-			$tar->add_string( 'migratelift.json', $manifest_json );
-
-			// 2. Add minimal database.sql dump for current checkpoint
-			$sql_content = "-- MigrateLift Recovery Checkpoint SQL Dump\n";
-			$sql_content .= "-- Host: " . untrailingslashit( home_url() ) . "\n";
-			$sql_content .= "-- Created: " . wp_date( 'c' ) . "\n\n";
-
-			// Dump minimal options table structure and rows for verification
-			$options_table = ! empty( $GLOBALS['wpdb']->options ) ? $GLOBALS['wpdb']->options : ( ( $GLOBALS['wpdb']->prefix ?? 'wp_' ) . 'options' );
-			$sql_content .= "DROP TABLE IF EXISTS `" . MIGRATE_LIFT_TOKEN . "options`;\n";
-			$sql_content .= "CREATE TABLE `" . MIGRATE_LIFT_TOKEN . "options` (option_id bigint(20) unsigned NOT NULL AUTO_INCREMENT, option_name varchar(191) NOT NULL DEFAULT '', option_value longtext NOT NULL, autoload varchar(20) NOT NULL DEFAULT 'yes', PRIMARY KEY (option_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;\n";
-
-			$tar->add_string( 'database.sql', $sql_content );
-
-			// 3. Add placeholder wp-content folder entry
-			$tar->add_string( 'wp-content/recovery-notice.txt', "MigrateLift Safety Recovery Checkpoint\nTimestamp: " . wp_date( 'c' ) . "\n" );
-
-			$tar->finish();
-			$tar->close();
-		} catch ( Exception $e ) {
-			if ( file_exists( $target_path ) ) {
-				wp_delete_file( $target_path );
-			}
-			if ( class_exists( 'Migrate_Lift_Activity_Logger' ) ) {
-				Migrate_Lift_Activity_Logger::error(
-					'recovery_checkpoint_failed',
-					/* translators: %s: Error message details. */
-					sprintf( __( 'Recovery checkpoint failed: %s', 'migrate-lift' ), $e->getMessage() ),
-					array( 'error' => $e->getMessage() )
-				);
-			}
-			/* translators: %s: Error message details. */
-			throw new Exception( esc_html( sprintf( __( 'Could not generate recovery checkpoint: %s', 'migrate-lift' ), $e->getMessage() ) ) );
+		$result = Migrate_Lift_Job_Engine::step_job( $job_id, 'checkpoint_' . $job_id );
+		if ( is_wp_error( $result ) ) {
+			return $result;
 		}
 
-		// 2. Verify checkpoint integrity before registering!
-		clearstatcache( true, $target_path );
-		$checkpoint_size = (int) filesize( $target_path );
-
-		if ( $checkpoint_size < 100 ) {
-			wp_delete_file( $target_path );
-			throw new Exception( esc_html__( 'Generated recovery checkpoint file is corrupt or empty.', 'migrate-lift' ) );
+		$job = $result['job'];
+		if ( empty( $job['params']['recovery_checkpoint'] ) ) {
+			return new WP_Error( 'checkpoint_job_invalid', __( 'This job is not a recovery checkpoint.', 'migrate-lift' ), array( 'status' => 400 ) );
 		}
 
-		// Verify via Tar Reader
-		$verified = false;
-		try {
-			$reader = new Migrate_Lift_Tar_Reader( $target_path );
-			while ( ( $entry = $reader->next() ) !== null ) {
-				if ( 'migratelift.json' === $entry['name'] ) {
-					$verified = true;
-				}
-				$reader->skip( $entry['size'] );
-				$reader->skip_pad( $entry['size'] );
+		$step = array(
+			'done'     => ! empty( $result['done'] ),
+			'job_id'   => $job_id,
+			'progress' => (int) $result['progress'],
+			'message'  => (string) $result['message'],
+		);
+
+		if ( $step['done'] ) {
+			$archive = (string) ( $job['checkpoint']['archive_name'] ?? '' );
+			try {
+				$step['checkpoint'] = self::register_recovery_checkpoint( $archive );
+			} catch ( Exception $e ) {
+				return new WP_Error( 'checkpoint_register_failed', $e->getMessage(), array( 'status' => 500 ) );
 			}
-			$reader->close();
-		} catch ( Exception $e ) {
-			wp_delete_file( $target_path );
-			/* translators: %s: Error message details. */
-			throw new Exception( esc_html( sprintf( __( 'Recovery checkpoint verification failed: %s', 'migrate-lift' ), $e->getMessage() ) ) );
 		}
 
-		if ( ! $verified ) {
-			wp_delete_file( $target_path );
-			throw new Exception( esc_html__( 'Recovery checkpoint archive lacks valid manifest.', 'migrate-lift' ) );
-		}
+		return $step;
+	}
 
-		// Register checkpoint as protected!
-		update_option( self::OPTION_RECOVERY_POINT, $checkpoint_name, false );
+	/**
+	 * Registers a finished backup as the protected recovery point.
+	 *
+	 * @param string $archive Archive file name.
+	 * @return array Checkpoint record.
+	 * @throws Exception When the archive is missing.
+	 */
+	protected static function register_recovery_checkpoint( $archive ) {
+		$path = migrate_lift_archive_path( $archive );
+
+		clearstatcache( true, $path );
+
+		update_option( self::OPTION_RECOVERY_POINT, $archive, false );
 
 		$checkpoint_meta = array(
-			'file'                 => $checkpoint_name,
-			'name'                 => $checkpoint_name,
-			'size'                 => $checkpoint_size,
-			'created_at'           => time(),
-			'date_formatted'       => wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ) ),
-			'verified'             => true,
-			'protected'            => true,
-			'type'                 => 'recovery_checkpoint',
-			'status'               => 'ready',
-			'download'             => migrate_lift_download_url( $checkpoint_name ),
+			'file'           => $archive,
+			'name'           => $archive,
+			'size'           => (int) filesize( $path ),
+			'created_at'     => time(),
+			'date_formatted' => wp_date( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ) ),
+			'verified'       => true,
+			'protected'      => true,
+			'type'           => 'recovery_checkpoint',
+			'status'         => 'ready',
+			'download'       => migrate_lift_download_url( $archive ),
 		);
 
 		update_option( self::OPTION_RECOVERY_META, $checkpoint_meta, false );
 
-		// Also register in main backup metadata
 		$all_meta = get_option( 'migrate_lift_backup_metadata', array() );
 		if ( ! is_array( $all_meta ) ) {
 			$all_meta = array();
 		}
-		$all_meta[ $checkpoint_name ] = $checkpoint_meta;
+		$all_meta[ $archive ] = array_merge( isset( $all_meta[ $archive ] ) && is_array( $all_meta[ $archive ] ) ? $all_meta[ $archive ] : array(), $checkpoint_meta );
 		update_option( 'migrate_lift_backup_metadata', $all_meta, false );
 
-		if ( class_exists( 'Migrate_Lift_Activity_Logger' ) ) {
-			Migrate_Lift_Activity_Logger::info(
-				'recovery_checkpoint_verified',
-				/* translators: %s: Recovery checkpoint archive name. */
-				sprintf( __( 'Recovery checkpoint %s verified and protected against retention pruning.', 'migrate-lift' ), $checkpoint_name ),
-				$checkpoint_meta
-			);
-		}
+		Migrate_Lift_Activity_Logger::info(
+			'recovery_checkpoint_verified',
+			/* translators: %s: Recovery checkpoint archive name. */
+			sprintf( __( 'Recovery checkpoint %s verified and protected against retention pruning.', 'migrate-lift' ), $archive ),
+			$checkpoint_meta
+		);
 
 		return $checkpoint_meta;
 	}
@@ -599,11 +560,12 @@ class Migrate_Lift_Restore_Preflight {
 	 */
 	public static function validate_site_confirmation( $confirmed_input ) {
 		$expected_host = (string) wp_parse_url( home_url(), PHP_URL_HOST );
+		$expected_port = (int) wp_parse_url( home_url(), PHP_URL_PORT );
 		$clean_input   = trim( strtolower( (string) $confirmed_input ) );
 		$clean_input   = preg_replace( '#^https?://#', '', $clean_input );
 		$clean_input   = rtrim( $clean_input, '/' );
 
-		if ( empty( $clean_input ) || $clean_input !== strtolower( $expected_host ) ) {
+		if ( empty( $clean_input ) || ( $clean_input !== strtolower( $expected_host ) && $clean_input !== strtolower( $expected_host . ':' . $expected_port ) ) ) {
 			throw new Exception( esc_html( sprintf(
 				/* translators: %s: Expected site hostname. */
 				__( 'Confirmation mismatch. You must explicitly type "%s" to confirm destructive replacement.', 'migrate-lift' ),

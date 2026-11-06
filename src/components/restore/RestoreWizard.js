@@ -1,5 +1,5 @@
 /**
- * RestoreWizard Component (Parts 10, 11 & 12: Restore Preflight, File & Database Replacement)
+ * RestoreWizard Component (Restore Preflight, File & Database Replacement)
  *
  * Implements the 7-step guided restore wizard:
  * 1. Select backup
@@ -66,7 +66,7 @@ export default function RestoreWizard( { initialArchive = null, onComplete } ) {
 	const [ preflightReport, setPreflightReport ] = useState( null );
 	const [ preflightError, setPreflightError ] = useState( null );
 
-	// Step 4 Strategy Selection State (Parts 11 & 12)
+	// Step 4 Strategy Selection State
 	const [ fileMode, setFileMode ] = useState( 'overwrite_matching' );
 	const [ dbMode, setDbMode ] = useState( 'replace_mapped' );
 	const [ preserveAdmin, setPreserveAdmin ] = useState( true );
@@ -189,12 +189,17 @@ export default function RestoreWizard( { initialArchive = null, onComplete } ) {
 
 		setExecutingRestore( true );
 		setExecutionError( null );
-		setExecutionProgress( 15 );
+		setExecutionProgress( 5 );
 		setRestorePhase( __( 'Creating verified destination recovery rollback checkpoint…', 'migrate-lift' ) );
 
 		try {
 			// Phase 1: Capture safety rollback checkpoint
-			const cp = await createRecoveryCheckpoint();
+			const cp = await createRecoveryCheckpoint( ( step ) => {
+				setExecutionProgress( 5 + Math.round( ( step.progress || 0 ) * 0.35 ) );
+				if ( step.message ) {
+					setRestorePhase( step.message );
+				}
+			} );
 			setCheckpointData( cp );
 
 			setExecutionProgress( 40 );
@@ -222,7 +227,7 @@ export default function RestoreWizard( { initialArchive = null, onComplete } ) {
 			// Advance to Step 7
 			setCurrentStep( 7 );
 		} catch ( err ) {
-			setExecutionError( err.message || __( 'Restoration failed and was safely rolled back.', 'migrate-lift' ) );
+			setExecutionError( err.message || __( 'Restoration failed. Check the activity log for details.', 'migrate-lift' ) );
 		} finally {
 			setExecutingRestore( false );
 		}
@@ -554,7 +559,7 @@ export default function RestoreWizard( { initialArchive = null, onComplete } ) {
 							<div style={ { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' } }>
 								<IconHarddrive style={ { width: 20, height: 20, color: 'var(--ml-teal)' } } />
 								<h3 style={ { margin: 0, fontSize: '15px', fontWeight: 700 } }>
-									{ __( 'File Replacement Policy (Part 11)', 'migrate-lift' ) }
+									{ __( 'File Replacement Policy', 'migrate-lift' ) }
 								</h3>
 							</div>
 
@@ -596,7 +601,7 @@ export default function RestoreWizard( { initialArchive = null, onComplete } ) {
 							<div style={ { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' } }>
 								<IconServer style={ { width: 20, height: 20, color: 'var(--ml-teal)' } } />
 								<h3 style={ { margin: 0, fontSize: '15px', fontWeight: 700 } }>
-									{ __( 'Database Replacement Policy (Part 12)', 'migrate-lift' ) }
+									{ __( 'Database Replacement Policy', 'migrate-lift' ) }
 								</h3>
 							</div>
 

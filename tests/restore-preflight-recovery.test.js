@@ -75,20 +75,14 @@ test( 'REST API declares strict permission callbacks for restore preflight route
 	}
 } );
 
-test( 'Non-Destructive Gating Contract: Destructive restore is locked in Part 10', () => {
+test( 'Non-Destructive Gating Contract: Nothing changes unless the request asks to apply', () => {
 	const restApiPhp = fs.readFileSync( path.join( __dirname, '../includes/rest-api.php' ), 'utf-8' );
 
 	// Verify /restore/execute returns locked status
 	assert.ok(
 		restApiPhp.includes( "'status'     => 'preflight_verified'" ) &&
 		restApiPhp.includes( "'locked'     => true" ),
-		'REST endpoint /restore/execute must report locked status during Part 10'
-	);
-
-	// Verify /import REST handler rejects destructive apply
-	assert.ok(
-		restApiPhp.includes( "'destructive_restore_locked'" ),
-		'/import handler must return destructive_restore_locked error'
+		'REST endpoint /restore/execute must not change anything without action=apply'
 	);
 } );
 

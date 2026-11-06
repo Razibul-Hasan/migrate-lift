@@ -64,19 +64,25 @@ export default function BackupJobDrawer( {
 		}
 
 		if ( ! jobRunnerActiveRef.current && ( ! activeJob || activeJob.state !== 'completed' ) ) {
-			startBackupExecution();
+			startBackupExecution( activeJob && activeJob.state !== 'completed' ? activeJob.id : null );
 		}
 	}, [ isOpen, activeJob ] );
 
-	const startBackupExecution = useCallback( async () => {
+	const startBackupExecution = useCallback( async ( resumeJobId = null ) => {
 		if ( jobRunnerActiveRef.current ) return;
 		jobRunnerActiveRef.current = true;
 		setIsRunning( true );
 		setError( null );
 		setCompletedOutput( null );
-		setProgress( 0 );
-		setPhase( 'init' );
-		setMessage( __( 'Starting full site snapshot…', 'migrate-lift' ) );
+
+		const targetJobId = resumeJobId || ( activeJob && activeJob.state !== 'completed' ? activeJob.id : null );
+		if ( ! targetJobId ) {
+			setProgress( 0 );
+			setPhase( 'init' );
+			setMessage( __( 'Starting full site snapshot…', 'migrate-lift' ) );
+		} else {
+			setMessage( __( 'Resuming site snapshot…', 'migrate-lift' ) );
+		}
 
 		try {
 			const result = await runRestJob( 'backup', {}, ( update ) => {
@@ -93,7 +99,7 @@ export default function BackupJobDrawer( {
 				if ( update.message ) {
 					setMessage( update.message );
 				}
-			} );
+			}, targetJobId );
 
 			setProgress( 100 );
 			setPhase( 'completed' );
@@ -109,20 +115,26 @@ export default function BackupJobDrawer( {
 		} catch ( err ) {
 			if ( ! isCancellingRef.current ) {
 				setError( err.message || __( 'Backup job failed unexpectedly.', 'migrate-lift' ) );
+				if ( err.activeJob ) {
+					setCurrentJob( err.activeJob );
+				} else if ( err.activeJobId ) {
+					setCurrentJob( ( prev ) => prev || { id: err.activeJobId } );
+				}
 			}
 			setIsRunning( false );
 			jobRunnerActiveRef.current = false;
 		}
-	}, [ onSuccess ] );
+	}, [ onSuccess, activeJob ] );
 
 	const handlePauseResume = async () => {
-		if ( ! currentJob?.id ) return;
+		const targetId = currentJob?.id || activeJob?.id;
+		if ( ! targetId ) return;
 		try {
 			if ( isPaused ) {
-				await resumeJob( currentJob.id );
+				await resumeJob( targetId );
 				setIsPaused( false );
 			} else {
-				await pauseJob( currentJob.id );
+				await pauseJob( targetId );
 				setIsPaused( true );
 			}
 		} catch ( err ) {
@@ -131,7 +143,8 @@ export default function BackupJobDrawer( {
 	};
 
 	const handleCancel = async () => {
-		if ( ! currentJob?.id ) {
+		const targetId = currentJob?.id || activeJob?.id;
+		if ( ! targetId ) {
 			onClose();
 			return;
 		}
@@ -141,9 +154,11 @@ export default function BackupJobDrawer( {
 
 		isCancellingRef.current = true;
 		try {
-			await cancelJob( currentJob.id );
+			await cancelJob( targetId );
 			setIsRunning( false );
 			jobRunnerActiveRef.current = false;
+			setCurrentJob( null );
+			setError( null );
 			onClose();
 		} catch ( err ) {
 			setError( err.message );
@@ -206,15 +221,38 @@ export default function BackupJobDrawer( {
 							<p style={ { fontSize: 13, color: 'var(--ml-ink-secondary)', margin: '0 0 16px' } }>
 								{ error }
 							</p>
-							<div style={ { display: 'flex', gap: 10 } }>
-								<button
-									type="button"
-									className="ml-btn primary"
-									onClick={ startBackupExecution }
-								>
-									<IconRefresh />
-									<span>{ __( 'Retry Backup', 'migrate-lift' ) }</span>
-								</button>
+							<div style={ { display: 'flex', gap: 10, flexWrap: 'wrap' } }>
+								{ ( currentJob?.id || activeJob?.id ) && (
+									<button
+										type="button"
+										className="ml-btn primary"
+										onClick={ () => startBackupExecution( currentJob?.id || activeJob?.id ) }
+									>
+										<IconRefresh />
+										<span>{ __( 'Resume Stepping', 'migrate-lift' ) }</span>
+									</button>
+								) }
+								{ ( currentJob?.id || activeJob?.id ) && (
+									<button
+										type="button"
+										className="ml-btn danger"
+										onClick={ handleCancel }
+										disabled={ isCancellingRef.current }
+									>
+										<IconAlertTriangle />
+										<span>{ __( 'Cancel Stuck Backup', 'migrate-lift' ) }</span>
+									</button>
+								) }
+								{ ! currentJob?.id && ! activeJob?.id && (
+									<button
+										type="button"
+										className="ml-btn primary"
+										onClick={ () => startBackupExecution() }
+									>
+										<IconRefresh />
+										<span>{ __( 'Retry Backup', 'migrate-lift' ) }</span>
+									</button>
+								) }
 								<button
 									type="button"
 									className="ml-btn"
@@ -353,7 +391,7 @@ export default function BackupJobDrawer( {
 									type="button"
 									className="ml-btn"
 									onClick={ handlePauseResume }
-									disabled={ ! isRunning }
+									disabled={ ! isRunning && ! currentJob?.id && ! activeJob?.id }
 								>
 									{ isPaused ? __( 'Resume', 'migrate-lift' ) : __( 'Pause', 'migrate-lift' ) }
 								</button>
@@ -361,7 +399,7 @@ export default function BackupJobDrawer( {
 									type="button"
 									className="ml-btn danger"
 									onClick={ handleCancel }
-									disabled={ ! isRunning }
+									disabled={ isCancellingRef.current || ( ! isRunning && ! currentJob?.id && ! activeJob?.id ) }
 								>
 									{ __( 'Cancel', 'migrate-lift' ) }
 								</button>

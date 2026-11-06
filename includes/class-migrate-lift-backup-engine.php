@@ -2,7 +2,7 @@
 /**
  * Full Site Backup Engine.
  *
- * Implements the Part 05 Backup Engine using the resumable Job Engine framework:
+ * Implements the Backup Engine using the resumable Job Engine framework:
  * - Format version 2.0 with verifiable manifest schema
  * - Allowlisted root file scanning with symlink traversal and unreadable file protection
  * - Rule-based granular exclusions (caches, logs, other backup folders)
@@ -198,9 +198,7 @@ class Migrate_Lift_Backup_Engine {
 	 * @throws Exception On preflight failure.
 	 */
 	protected static function step_init( &$job ) {
-		$storage_dir = function_exists( 'migrate_lift_dir' )
-			? migrate_lift_dir()
-			: untrailingslashit( (string) constant( 'WP_CONTENT_DIR' ) ) . '/migrate-lift-files';
+		$storage_dir = migrate_lift_dir();
 
 		if ( ! is_dir( $storage_dir ) && ! wp_mkdir_p( $storage_dir ) ) {
 			throw new Exception( esc_html__( 'Could not create protected storage directory. Verify folder permissions.', 'migrate-lift' ) );
@@ -333,7 +331,7 @@ class Migrate_Lift_Backup_Engine {
 	 * @return array Step result.
 	 */
 	protected static function step_scan( &$job ) {
-		$base_dir = untrailingslashit( str_replace( '\\', '/', (string) constant( 'WP_CONTENT_DIR' ) ) );
+		$base_dir = str_replace( '\\', '/', migrate_lift_content_dir() );
 		$cut      = strlen( $base_dir ) + 1;
 		$staging  = $job['checkpoint']['staging_dir'];
 		$list_file = $staging . '/files.txt';
@@ -606,7 +604,7 @@ class Migrate_Lift_Backup_Engine {
 		}
 
 		// 2. Stream database.sql and allowlisted files.
-		$base_dir = untrailingslashit( str_replace( '\\', '/', (string) constant( 'WP_CONTENT_DIR' ) ) ) . '/';
+		$base_dir = str_replace( '\\', '/', migrate_lift_content_dir() ) . '/';
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
 		$fp_list  = file_exists( $list_file ) ? fopen( $list_file, 'rb' ) : false;
 		$finished = false;
@@ -1053,8 +1051,6 @@ class Migrate_Lift_Backup_Engine {
 				'mysql_version'   => $mysql_ver,
 				'os'              => PHP_OS,
 				'server_software' => isset( $_SERVER['SERVER_SOFTWARE'] ) ? sanitize_text_field( wp_unslash( $_SERVER['SERVER_SOFTWARE'] ) ) : '',
-				'abspath'         => defined( 'ABSPATH' ) ? ABSPATH : '',
-				'content_dir'     => defined( 'WP_CONTENT_DIR' ) ? (string) constant( 'WP_CONTENT_DIR' ) : '',
 			),
 
 			// Compatibility flat fields for legacy format 1 consumers.
@@ -1064,7 +1060,8 @@ class Migrate_Lift_Backup_Engine {
 			'wp'                    => $wp_ver,
 			'php'                   => PHP_VERSION,
 			'mysql'                 => $mysql_ver,
-			'abspath'               => defined( 'ABSPATH' ) ? ABSPATH : '',
+			'abspath'               => migrate_lift_root_dir(),
+			'plugin'                => plugin_basename( MIGRATE_LIFT_FILE ),
 
 			// Component inventory.
 			'component_inventory'   => array(
@@ -1121,10 +1118,12 @@ class Migrate_Lift_Backup_Engine {
 			}
 		}
 
-		// Fallback for mock test environments or when wpdb is stubbed.
-		$mock_tables = apply_filters( 'migrate_lift_test_tables', null );
-		if ( is_array( $mock_tables ) ) {
-			return $mock_tables;
+		// The standalone test runner has no database.
+		if ( defined( 'MIGRATE_LIFT_TESTING' ) ) {
+			$mock_tables = apply_filters( 'migrate_lift_test_tables', null );
+			if ( is_array( $mock_tables ) ) {
+				return $mock_tables;
+			}
 		}
 
 		return array();
@@ -1145,16 +1144,14 @@ class Migrate_Lift_Backup_Engine {
 			return true;
 		}
 
-		// Support test mocks where live mysqli is not connected.
-		if ( ! isset( $wpdb->dbh ) || ! ( $wpdb->dbh instanceof mysqli ) ) {
-			$mock_dump = apply_filters( 'migrate_lift_test_db_dump', null );
-			if ( null !== $mock_dump ) {
-				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-				file_put_contents( $sql_path, $mock_dump, FILE_APPEND );
-				$db_state['table_index'] = count( $tables );
-				$db_state['total_rows']  = 10;
-				return true;
-			}
+		// Lets the standalone test runner supply a dump without a database.
+		$mock_dump = defined( 'MIGRATE_LIFT_TESTING' ) ? apply_filters( 'migrate_lift_test_db_dump', null ) : null;
+		if ( null !== $mock_dump ) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
+			file_put_contents( $sql_path, $mock_dump, FILE_APPEND );
+			$db_state['table_index'] = count( $tables );
+			$db_state['total_rows']  = 10;
+			return true;
 		}
 
 		if ( function_exists( 'migrate_lift_db_session' ) ) {
@@ -1162,19 +1159,17 @@ class Migrate_Lift_Backup_Engine {
 		}
 
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen
-		$out   = fopen( $sql_path, 'ab' );
-		$cut   = strlen( $wpdb->prefix );
-		$batch = self::DB_BATCH_SIZE;
+		$out = fopen( $sql_path, 'ab' );
+		$cut = strlen( $wpdb->prefix );
 
 		while ( $db_state['table_index'] < count( $tables ) && ! self::out_of_time() ) {
 			$table  = $tables[ $db_state['table_index'] ];
 			$target = migrate_lift_name( MIGRATE_LIFT_TOKEN . substr( $table, $cut ) );
 
 			if ( 0 === $db_state['row_offset'] ) {
-				// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_fetch_row
-				$row    = mysqli_fetch_row( migrate_lift_q( 'SHOW CREATE TABLE ' . migrate_lift_name( $table ) ) );
-				$create = preg_replace( '/^CREATE TABLE `[^`]+`/', 'CREATE TABLE ' . $target, $row[1] );
-				$create = str_replace( 'REFERENCES `' . $wpdb->prefix, 'REFERENCES `' . MIGRATE_LIFT_TOKEN, $create );
+				$created = migrate_lift_rows( 'SHOW CREATE TABLE ' . migrate_lift_name( $table ) );
+				$create  = preg_replace( '/^CREATE TABLE `[^`]+`/', 'CREATE TABLE ' . $target, $created[0][1] );
+				$create  = str_replace( 'REFERENCES `' . $wpdb->prefix, 'REFERENCES `' . MIGRATE_LIFT_TOKEN, $create );
 				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite
 				fwrite( $out, "DROP TABLE IF EXISTS $target;\n" . str_replace( array( "\r\n", "\n" ), ' ', $create ) . ";\n" );
 			}
@@ -1182,19 +1177,21 @@ class Migrate_Lift_Backup_Engine {
 			$info   = migrate_lift_table_info( $table );
 			$cols   = implode( ',', array_map( 'migrate_lift_name', $info['cols'] ) );
 			$order  = $info['pk'] ? ' ORDER BY ' . implode( ',', array_map( 'migrate_lift_name', $info['pk'] ) ) : '';
-			$result = migrate_lift_q( "SELECT $cols FROM " . migrate_lift_name( $table ) . "$order LIMIT {$db_state['row_offset']}, $batch" );
+			$batch  = isset( $db_state['batch'] ) ? (int) $db_state['batch'] : 100;
+			$fetch  = migrate_lift_rows( "SELECT $cols FROM " . migrate_lift_name( $table ) . "$order LIMIT " . (int) $db_state['row_offset'] . ", $batch" );
 			$head   = "INSERT INTO $target ($cols) VALUES ";
 			$values = array();
 			$length = 0;
-			$rows   = 0;
+			$bytes  = 0;
+			$rows   = count( $fetch );
 
-			// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_fetch_row
-			while ( $row = mysqli_fetch_row( $result ) ) {
-				++$rows;
+			foreach ( $fetch as $row ) {
 				++$db_state['total_rows'];
 				foreach ( $row as $i => $value ) {
 					if ( null === $value ) {
 						$row[ $i ] = 'NULL';
+					} elseif ( ! empty( $info['bit'][ $i ] ) ) {
+						$row[ $i ] = migrate_lift_bit_literal( $value );
 					} elseif ( ! empty( $info['bin'][ $i ] ) ) {
 						$row[ $i ] = '' === $value ? "''" : '0x' . bin2hex( $value );
 					} else {
@@ -1202,7 +1199,9 @@ class Migrate_Lift_Backup_Engine {
 					}
 				}
 				$values[] = '(' . implode( ',', $row ) . ')';
-				$length  += strlen( end( $values ) );
+				$size     = strlen( end( $values ) );
+				$length  += $size;
+				$bytes   += $size;
 				if ( $length > 1000000 ) {
 					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite
 					fwrite( $out, $head . implode( ',', $values ) . ";\n" );
@@ -1210,8 +1209,7 @@ class Migrate_Lift_Backup_Engine {
 					$length = 0;
 				}
 			}
-			// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_free_result
-			mysqli_free_result( $result );
+			unset( $fetch );
 			if ( $values ) {
 				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite
 				fwrite( $out, $head . implode( ',', $values ) . ";\n" );
@@ -1220,8 +1218,10 @@ class Migrate_Lift_Backup_Engine {
 			if ( $rows < $batch ) {
 				++$db_state['table_index'];
 				$db_state['row_offset'] = 0;
+				unset( $db_state['batch'] );
 			} else {
 				$db_state['row_offset'] += $batch;
+				$db_state['batch']       = migrate_lift_next_batch( $batch, $bytes, self::DB_BATCH_SIZE );
 			}
 		}
 

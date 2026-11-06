@@ -49,7 +49,7 @@ test( 'Migration Wizard Component Contract: 7-step guided workflow & safety guar
 
 	// Verify file and database policies
 	assert.ok( wizardJs.includes( 'overwrite_matching' ), 'Must support overwrite_matching file policy' );
-	assert.ok( wizardJs.includes( 'clean_sync' ), 'Must support clean_sync file policy' );
+	assert.ok( wizardJs.includes( 'sync_managed' ), 'Must support sync_managed file policy' );
 	assert.ok( wizardJs.includes( 'replace_mapped' ), 'Must support replace_mapped db policy' );
 	assert.ok( wizardJs.includes( 'preserveAdmin' ), 'Must support admin user preservation option' );
 

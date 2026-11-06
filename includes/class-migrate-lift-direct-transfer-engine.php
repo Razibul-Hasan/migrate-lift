@@ -1,6 +1,6 @@
 <?php
 /**
- * Direct Transfer Engine (Part 14).
+ * Direct Transfer Engine.
  *
  * Implements fault-tolerant, resumable server-to-server archive transfer
  * over authenticated HTTPS using bounded chunk streaming, per-part SHA-256 checksums,
@@ -20,6 +20,12 @@ class Migrate_Lift_Direct_Transfer_Engine {
 	 * Default transfer chunk size in bytes (2 MiB).
 	 */
 	const DEFAULT_CHUNK_SIZE = 2097152;
+
+	/**
+	 * Smallest and largest allowed transfer chunk in bytes.
+	 */
+	const MIN_CHUNK_SIZE = 262144;
+	const MAX_CHUNK_SIZE = 8388608;
 
 	/**
 	 * Maximum retry attempts per chunk before pausing/failing.
@@ -85,8 +91,9 @@ class Migrate_Lift_Direct_Transfer_Engine {
 		}
 
 		$archive = sanitize_file_name( $archive );
-		$filepath = migrate_lift_dir( $archive );
-		if ( ! file_exists( $filepath ) ) {
+		try {
+			$filepath = migrate_lift_archive_path( $archive );
+		} catch ( Exception $e ) {
 			/* translators: %s: archive name */
 			return new WP_Error( 'archive_not_found', sprintf( __( 'Archive %s does not exist.', 'migrate-lift' ), $archive ) );
 		}
@@ -97,18 +104,22 @@ class Migrate_Lift_Direct_Transfer_Engine {
 		}
 
 		// Calculate archive checksum if not provided.
-		$sha256 = ! empty( $options['sha256'] ) ? sanitize_text_field( $options['sha256'] ) : hash_file( 'sha256', $filepath );
+		$sha256     = ! empty( $options['sha256'] ) ? sanitize_text_field( $options['sha256'] ) : hash_file( 'sha256', $filepath );
 		$chunk_size = ! empty( $options['chunk_size'] ) ? (int) $options['chunk_size'] : self::DEFAULT_CHUNK_SIZE;
-		$chunk_size = max( 262144, min( 8388608, $chunk_size ) ); // 256KB to 8MB bounds
+
+		// Base64 and JSON add about a third, so keep each request well under the destination's limit.
+		$remote_limit = (int) ( $pair['destination_meta']['max_upload_size'] ?? 0 );
+		if ( $remote_limit > 0 ) {
+			$chunk_size = min( $chunk_size, (int) floor( $remote_limit / 2 ) );
+		}
+
+		$chunk_size   = max( self::MIN_CHUNK_SIZE, min( self::MAX_CHUNK_SIZE, $chunk_size ) );
 		$total_chunks = (int) ceil( $file_size / $chunk_size );
 
-		$transfer_id = 'xfer_' . bin2hex( random_bytes( 8 ) );
-
 		$params = array(
-			'transfer_id'  => $transfer_id,
+			'transfer_id'  => 'xfer_' . bin2hex( random_bytes( 8 ) ),
 			'pair_id'      => $pair_id,
 			'archive'      => $archive,
-			'filepath'     => $filepath,
 			'total_bytes'  => $file_size,
 			'sha256'       => $sha256,
 			'chunk_size'   => $chunk_size,
@@ -117,22 +128,7 @@ class Migrate_Lift_Direct_Transfer_Engine {
 			'remote_name'  => $pair['remote_name'],
 		);
 
-		// Initial checkpoint state
-		$initial_checkpoint = array(
-			'stage'             => 'init',
-			'chunks_completed'  => 0,
-			'bytes_transferred' => 0,
-			'last_chunk_index'  => -1,
-			'retries_current'   => 0,
-			'speed_bps'         => 0,
-			'started_at'        => time(),
-		);
-
-		return Migrate_Lift_Job_Engine::create_job(
-			'direct_transfer',
-			$params,
-			'transfer_' . md5( $pair_id . '_' . $archive )
-		);
+		return Migrate_Lift_Job_Engine::create_job( 'direct_transfer', $params );
 	}
 
 	/**
@@ -140,16 +136,16 @@ class Migrate_Lift_Direct_Transfer_Engine {
 	 *
 	 * @param array  $job       Job data array.
 	 * @param string $worker_id Worker lock identifier.
-	 * @return array Updated job state.
+	 * @return array Step result with done, job and message.
+	 * @throws Exception On a failed remote call. The job engine retries the step.
 	 */
 	public static function handle_transfer_step( $job, $worker_id ) {
 		$params     = $job['params'];
-		$checkpoint = ! empty( $job['checkpoint'] ) ? $job['checkpoint'] : array(
+		$checkpoint = isset( $job['checkpoint']['stage'] ) ? $job['checkpoint'] : array(
 			'stage'             => 'init',
 			'chunks_completed'  => 0,
 			'bytes_transferred' => 0,
 			'last_chunk_index'  => -1,
-			'retries_current'   => 0,
 			'speed_bps'         => 0,
 			'started_at'        => time(),
 		);
@@ -157,40 +153,39 @@ class Migrate_Lift_Direct_Transfer_Engine {
 		$pair_id      = $params['pair_id'];
 		$transfer_id  = $params['transfer_id'];
 		$archive      = $params['archive'];
-		$filepath     = $params['filepath'];
 		$total_bytes  = (float) $params['total_bytes'];
 		$sha256       = $params['sha256'];
 		$chunk_size   = (int) $params['chunk_size'];
 		$total_chunks = (int) $params['total_chunks'];
+		$filepath     = migrate_lift_archive_path( $archive );
 
-		if ( ! file_exists( $filepath ) ) {
-			throw new Exception( esc_html( sprintf( 'Source archive %s missing from disk during transfer.', $archive ) ) );
-		}
-
-		// Stage 1: Remote Session Initialization
+		// Stage 1: Remote Session Initialization.
 		if ( 'init' === $checkpoint['stage'] ) {
-			$init_res = self::send_remote_init( $pair_id, array(
-				'transfer_id'  => $transfer_id,
-				'archive'      => $archive,
-				'total_bytes'  => $total_bytes,
-				'sha256'       => $sha256,
-				'chunk_size'   => $chunk_size,
-				'total_chunks' => $total_chunks,
-			) );
+			$init_res = self::send_remote_init(
+				$pair_id,
+				array(
+					'transfer_id'  => $transfer_id,
+					'archive'      => $archive,
+					'total_bytes'  => $total_bytes,
+					'sha256'       => $sha256,
+					'chunk_size'   => $chunk_size,
+					'total_chunks' => $total_chunks,
+				)
+			);
 
 			if ( is_wp_error( $init_res ) ) {
 				throw new Exception( esc_html( $init_res->get_error_message() ) );
 			}
 
-			// If destination already has some chunks (e.g. from previous attempt), resume from next
-			$existing_chunks = is_array( $init_res['received_chunks'] ?? null ) ? $init_res['received_chunks'] : array();
-			$checkpoint['stage'] = 'transferring';
-			$checkpoint['existing_chunks'] = $existing_chunks;
-			$checkpoint['chunks_completed'] = count( $existing_chunks );
-			$checkpoint['bytes_transferred'] = count( $existing_chunks ) * $chunk_size;
+			// If destination already has some chunks (e.g. from previous attempt), resume from next.
+			$existing_chunks                 = is_array( $init_res['received_chunks'] ?? null ) ? array_map( 'intval', $init_res['received_chunks'] ) : array();
+			$checkpoint['stage']             = 'transferring';
+			$checkpoint['existing_chunks']   = $existing_chunks;
+			$checkpoint['chunks_completed']  = count( $existing_chunks );
+			$checkpoint['bytes_transferred'] = min( $total_bytes, count( $existing_chunks ) * $chunk_size );
 		}
 
-		// Stage 2: Streaming Chunks Loop
+		// Stage 2: Streaming Chunks Loop.
 		if ( 'transferring' === $checkpoint['stage'] ) {
 			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Direct file stream for chunked transfer.
 			$handle = @fopen( $filepath, 'rb' );
@@ -198,45 +193,46 @@ class Migrate_Lift_Direct_Transfer_Engine {
 				throw new Exception( esc_html( sprintf( 'Could not open %s for reading.', $archive ) ) );
 			}
 
-			$time_start_step = microtime( true );
-			$existing_set    = array_flip( $checkpoint['existing_chunks'] ?? array() );
+			$existing_set = array_flip( $checkpoint['existing_chunks'] ?? array() );
 
 			for ( $chunk_idx = $checkpoint['last_chunk_index'] + 1; $chunk_idx < $total_chunks; $chunk_idx++ ) {
-				// Check time budget
-				if ( function_exists( 'migrate_lift_out_of_time' ) && migrate_lift_out_of_time() ) {
+				if ( migrate_lift_out_of_time() ) {
 					break;
 				}
 
-				// Skip if chunk was already received by destination in resumed session
+				// Skip if chunk was already received by destination in resumed session.
 				if ( isset( $existing_set[ $chunk_idx ] ) ) {
 					$checkpoint['last_chunk_index'] = $chunk_idx;
 					continue;
 				}
 
-				$offset = (float) $chunk_idx * $chunk_size;
-				fseek( $handle, (int) $offset );
+				fseek( $handle, (int) ( (float) $chunk_idx * $chunk_size ) );
 				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fread -- Binary chunk read for remote transfer.
 				$chunk_bytes = fread( $handle, $chunk_size );
 
-				if ( false === $chunk_bytes || strlen( $chunk_bytes ) === 0 ) {
-					break;
+				if ( false === $chunk_bytes || '' === $chunk_bytes ) {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
+					fclose( $handle );
+					throw new Exception( esc_html( sprintf( 'Could not read chunk %d of %s.', $chunk_idx + 1, $archive ) ) );
 				}
 
-				$chunk_len = strlen( $chunk_bytes );
 				$chunk_sha = hash( 'sha256', $chunk_bytes );
 
-				// Send chunk to destination with retry
-				$send_ok = false;
+				// Send chunk to destination with retry.
+				$send_ok   = false;
 				$error_msg = '';
 
 				for ( $attempt = 0; $attempt < self::MAX_RETRIES; $attempt++ ) {
-					$chunk_res = self::send_remote_chunk( $pair_id, array(
-						'transfer_id'  => $transfer_id,
-						'chunk_index'  => $chunk_idx,
-						'total_chunks' => $total_chunks,
-						'chunk_sha256' => $chunk_sha,
-						'chunk_data'   => base64_encode( $chunk_bytes ),
-					) );
+					$chunk_res = self::send_remote_chunk(
+						$pair_id,
+						array(
+							'transfer_id'  => $transfer_id,
+							'chunk_index'  => $chunk_idx,
+							'total_chunks' => $total_chunks,
+							'chunk_sha256' => $chunk_sha,
+							'chunk_data'   => base64_encode( $chunk_bytes ),
+						)
+					);
 
 					if ( ! is_wp_error( $chunk_res ) && ! empty( $chunk_res['success'] ) ) {
 						$send_ok = true;
@@ -244,7 +240,7 @@ class Migrate_Lift_Direct_Transfer_Engine {
 					}
 
 					$error_msg = is_wp_error( $chunk_res ) ? $chunk_res->get_error_message() : ( $chunk_res['message'] ?? 'Chunk failed' );
-					// Short backoff delay
+					// Short backoff delay.
 					usleep( 250000 * ( 1 << $attempt ) );
 				}
 
@@ -255,14 +251,9 @@ class Migrate_Lift_Direct_Transfer_Engine {
 				}
 
 				$checkpoint['last_chunk_index']   = $chunk_idx;
-				$checkpoint['chunks_completed']   += 1;
-				$checkpoint['bytes_transferred']  += $chunk_len;
-
-				// Calculate transfer speed
-				$elapsed_step = microtime( true ) - $time_start_step;
-				if ( $elapsed_step > 0.1 ) {
-					$checkpoint['speed_bps'] = round( ( $checkpoint['chunks_completed'] * $chunk_size ) / ( time() - $checkpoint['started_at'] + 1 ) );
-				}
+				$checkpoint['chunks_completed']  += 1;
+				$checkpoint['bytes_transferred'] += strlen( $chunk_bytes );
+				$checkpoint['speed_bps']          = (int) round( $checkpoint['bytes_transferred'] / max( 1, time() - $checkpoint['started_at'] ) );
 			}
 
 			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
@@ -273,34 +264,40 @@ class Migrate_Lift_Direct_Transfer_Engine {
 			}
 		}
 
-		// Stage 3: Remote Finalization & Integrity Verification
+		$job['counts']['bytes_total']     = $total_bytes;
+		$job['counts']['bytes_processed'] = $checkpoint['bytes_transferred'];
+		$job['counts']['items_total']     = $total_chunks;
+		$job['counts']['items_processed'] = $checkpoint['chunks_completed'];
+
+		// Stage 3: Remote Finalization & Integrity Verification.
 		if ( 'finalizing' === $checkpoint['stage'] ) {
-			$fin_res = self::send_remote_finalize( $pair_id, array(
-				'transfer_id' => $transfer_id,
-				'archive'     => $archive,
-				'sha256'      => $sha256,
-				'total_bytes' => $total_bytes,
-			) );
+			$job['checkpoint'] = $checkpoint;
+
+			$fin_res = self::send_remote_finalize(
+				$pair_id,
+				array( 'transfer_id' => $transfer_id )
+			);
 
 			if ( is_wp_error( $fin_res ) ) {
 				throw new Exception( esc_html( sprintf( 'Finalizing transfer on destination failed: %s', $fin_res->get_error_message() ) ) );
 			}
 
-			$checkpoint['stage']       = 'completed';
-			$checkpoint['verified']    = true;
-			$checkpoint['finished_at'] = time();
+			// The destination may have stored the archive under another name.
+			$checkpoint['stage']          = 'completed';
+			$checkpoint['verified']       = true;
+			$checkpoint['finished_at']    = time();
+			$checkpoint['remote_archive'] = sanitize_file_name( (string) ( $fin_res['archive'] ?? $archive ) );
+			$job['checkpoint']            = $checkpoint;
+			$job['diagnostic_detail']     = '';
 
 			return array(
-				'state'      => Migrate_Lift_Job_Engine::STATE_COMPLETED,
-				'progress'   => 100,
-				'checkpoint' => $checkpoint,
+				'done'    => true,
+				'job'     => $job,
 				/* translators: %s: archive name */
-				'message'    => sprintf( __( 'Transfer of %s verified and completed successfully.', 'migrate-lift' ), $archive ),
-				'results'    => $fin_res,
+				'message' => sprintf( __( 'Transfer of %s verified and completed successfully.', 'migrate-lift' ), $archive ),
 			);
 		}
 
-		$progress = $total_chunks > 0 ? min( 99, round( ( $checkpoint['chunks_completed'] / $total_chunks ) * 100 ) ) : 0;
 		$msg = sprintf(
 			/* translators: 1: archive name, 2: current chunk index, 3: total chunks, 4: transferred bytes formatted, 5: total bytes formatted */
 			__( 'Streaming %1$s (%2$d/%3$d chunks, %4$s/%5$s)', 'migrate-lift' ),
@@ -311,12 +308,41 @@ class Migrate_Lift_Direct_Transfer_Engine {
 			size_format( $total_bytes )
 		);
 
+		$job['checkpoint']        = $checkpoint;
+		$job['phase']             = $checkpoint['stage'];
+		$job['percentage']        = $total_chunks > 0 ? (int) min( 99, round( ( $checkpoint['chunks_completed'] / $total_chunks ) * 100 ) ) : 0;
+		$job['diagnostic_detail'] = $msg;
+
 		return array(
-			'state'      => Migrate_Lift_Job_Engine::STATE_RUNNING,
-			'progress'   => $progress,
-			'checkpoint' => $checkpoint,
-			'message'    => $msg,
+			'done'    => false,
+			'job'     => $job,
+			'message' => $msg,
 		);
+	}
+
+	/**
+	 * Whether a transfer identifier has the exact form start_transfer_job() generates.
+	 *
+	 * @param string $transfer_id Transfer identifier.
+	 * @return bool
+	 */
+	protected static function is_valid_transfer_id( $transfer_id ) {
+		return 1 === preg_match( '/^xfer_[a-f0-9]{16}$/', (string) $transfer_id );
+	}
+
+	/**
+	 * Reads a transfer session manifest.
+	 *
+	 * @param string $session_dir Session folder.
+	 * @return array|null
+	 */
+	protected static function read_session_manifest( $session_dir ) {
+		$file = $session_dir . '/manifest.json';
+		if ( ! file_exists( $file ) ) {
+			return null;
+		}
+		$manifest = json_decode( (string) file_get_contents( $file ), true );
+		return is_array( $manifest ) ? $manifest : null;
 	}
 
 	/**
@@ -326,15 +352,23 @@ class Migrate_Lift_Direct_Transfer_Engine {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function handle_destination_init( $request ) {
-		$transfer_id  = sanitize_file_name( (string) $request->get_param( 'transfer_id' ) );
-		$archive      = sanitize_file_name( (string) $request->get_param( 'archive' ) );
+		$transfer_id  = (string) $request->get_param( 'transfer_id' );
+		$archive      = (string) $request->get_param( 'archive' );
 		$total_bytes  = (float) $request->get_param( 'total_bytes' );
-		$sha256       = sanitize_text_field( (string) $request->get_param( 'sha256' ) );
+		$sha256       = strtolower( (string) $request->get_param( 'sha256' ) );
 		$chunk_size   = (int) $request->get_param( 'chunk_size' );
 		$total_chunks = (int) $request->get_param( 'total_chunks' );
 
-		if ( empty( $transfer_id ) || empty( $archive ) || $total_bytes <= 0 ) {
-			return new WP_Error( 'invalid_init_payload', __( 'Missing required transfer initialization parameters.', 'migrate-lift' ), array( 'status' => 400 ) );
+		if (
+			! self::is_valid_transfer_id( $transfer_id )
+			|| ! migrate_lift_is_archive_name( $archive )
+			|| ! preg_match( '/^[a-f0-9]{64}$/', $sha256 )
+			|| $total_bytes <= 0
+			|| $chunk_size < self::MIN_CHUNK_SIZE
+			|| $chunk_size > self::MAX_CHUNK_SIZE
+			|| (int) ceil( $total_bytes / $chunk_size ) !== $total_chunks
+		) {
+			return new WP_Error( 'invalid_init_payload', __( 'Missing or invalid transfer initialization parameters.', 'migrate-lift' ), array( 'status' => 400 ) );
 		}
 
 		// Preflight disk capacity: Require at least 1.5x archive size free space.
@@ -366,14 +400,12 @@ class Migrate_Lift_Direct_Transfer_Engine {
 			'received'     => array(),
 		);
 
-		// If resuming existing session, detect already written chunk files
+		// If resuming existing session, detect already written chunk files.
 		$received = array();
-		if ( file_exists( $session_dir . '/manifest.json' ) ) {
-			$existing = json_decode( (string) file_get_contents( $session_dir . '/manifest.json' ), true );
-			if ( is_array( $existing ) && ( $existing['sha256'] ?? '' ) === $sha256 ) {
-				$manifest['received'] = $existing['received'] ?? array();
-				$received = array_keys( $manifest['received'] );
-			}
+		$existing = self::read_session_manifest( $session_dir );
+		if ( $existing && ( $existing['sha256'] ?? '' ) === $sha256 ) {
+			$manifest['received'] = $existing['received'] ?? array();
+			$received             = array_keys( $manifest['received'] );
 		}
 
 		file_put_contents( $session_dir . '/manifest.json', wp_json_encode( $manifest ), LOCK_EX );
@@ -395,39 +427,44 @@ class Migrate_Lift_Direct_Transfer_Engine {
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function handle_destination_chunk( $request ) {
-		$transfer_id  = sanitize_file_name( (string) $request->get_param( 'transfer_id' ) );
+		$transfer_id  = (string) $request->get_param( 'transfer_id' );
 		$chunk_index  = (int) $request->get_param( 'chunk_index' );
-		$chunk_sha256 = sanitize_text_field( (string) $request->get_param( 'chunk_sha256' ) );
+		$chunk_sha256 = strtolower( (string) $request->get_param( 'chunk_sha256' ) );
 		$chunk_b64    = (string) $request->get_param( 'chunk_data' );
 
-		if ( empty( $transfer_id ) || empty( $chunk_b64 ) ) {
+		if ( ! self::is_valid_transfer_id( $transfer_id ) || '' === $chunk_b64 ) {
 			return new WP_Error( 'invalid_chunk_payload', __( 'Chunk payload is missing or empty.', 'migrate-lift' ), array( 'status' => 400 ) );
 		}
 
 		$session_dir = self::get_incoming_dir( $transfer_id );
-		if ( ! file_exists( $session_dir . '/manifest.json' ) ) {
+		$manifest    = self::read_session_manifest( $session_dir );
+		if ( ! $manifest ) {
 			return new WP_Error( 'session_not_found', __( 'Transfer session not found or expired.', 'migrate-lift' ), array( 'status' => 404 ) );
 		}
 
+		if ( $chunk_index < 0 || $chunk_index >= (int) $manifest['total_chunks'] ) {
+			return new WP_Error( 'invalid_chunk_payload', __( 'Chunk index is outside this transfer.', 'migrate-lift' ), array( 'status' => 400 ) );
+		}
+
 		$chunk_data = base64_decode( $chunk_b64, true );
-		if ( false === $chunk_data ) {
+		if ( false === $chunk_data || strlen( $chunk_data ) > (int) $manifest['chunk_size'] ) {
 			return new WP_Error( 'chunk_decode_failed', __( 'Could not decode base64 chunk data.', 'migrate-lift' ), array( 'status' => 400 ) );
 		}
 
-		// Verify per-chunk SHA-256 checksum
+		// Verify per-chunk SHA-256 checksum.
 		$calculated_sha = hash( 'sha256', $chunk_data );
-		if ( ! hash_equals( $chunk_sha256, $calculated_sha ) ) {
+		if ( ! hash_equals( $calculated_sha, $chunk_sha256 ) ) {
 			return new WP_Error( 'chunk_checksum_mismatch', __( 'Chunk SHA-256 checksum verification failed.', 'migrate-lift' ), array( 'status' => 422 ) );
 		}
 
-		$chunk_filename = sprintf( 'chunk_%06d.part', $chunk_index );
-		$chunk_filepath = $session_dir . '/' . $chunk_filename;
+		$chunk_filepath = $session_dir . '/' . sprintf( 'chunk_%06d.part', $chunk_index );
 
-		// Idempotent write
-		file_put_contents( $chunk_filepath, $chunk_data, LOCK_EX );
+		// Idempotent write.
+		if ( false === file_put_contents( $chunk_filepath, $chunk_data, LOCK_EX ) ) {
+			return new WP_Error( 'chunk_write_failed', __( 'Could not write chunk to disk. Storage full or permission denied.', 'migrate-lift' ), array( 'status' => 507 ) );
+		}
 
-		// Update manifest
-		$manifest = json_decode( (string) file_get_contents( $session_dir . '/manifest.json' ), true );
+		// Update manifest.
 		$manifest['received'][ (string) $chunk_index ] = array(
 			'size'   => strlen( $chunk_data ),
 			'sha256' => $chunk_sha256,
@@ -445,26 +482,46 @@ class Migrate_Lift_Direct_Transfer_Engine {
 	}
 
 	/**
+	 * Destination handler: Removes the temporary files of a cancelled transfer.
+	 *
+	 * @param WP_REST_Request $request Request.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public static function handle_destination_abort( $request ) {
+		$transfer_id = (string) $request->get_param( 'transfer_id' );
+		if ( ! self::is_valid_transfer_id( $transfer_id ) ) {
+			return new WP_Error( 'invalid_abort_payload', __( 'Invalid transfer identifier.', 'migrate-lift' ), array( 'status' => 400 ) );
+		}
+
+		self::cleanup_incoming_session( $transfer_id );
+
+		return rest_ensure_response( array( 'success' => true ) );
+	}
+
+	/**
 	 * Destination handler: Finalizes transfer, reassembles and verifies complete archive.
+	 * The name, size and checksum come from the session manifest validated at init.
 	 *
 	 * @param WP_REST_Request $request Request.
 	 * @return WP_REST_Response|WP_Error
 	 */
 	public static function handle_destination_finalize( $request ) {
-		$transfer_id = sanitize_file_name( (string) $request->get_param( 'transfer_id' ) );
-		$archive     = sanitize_file_name( (string) $request->get_param( 'archive' ) );
-		$expected_sha= sanitize_text_field( (string) $request->get_param( 'sha256' ) );
-		$expected_len= (float) $request->get_param( 'total_bytes' );
+		$transfer_id = (string) $request->get_param( 'transfer_id' );
+		if ( ! self::is_valid_transfer_id( $transfer_id ) ) {
+			return new WP_Error( 'invalid_finalize_payload', __( 'Invalid transfer identifier.', 'migrate-lift' ), array( 'status' => 400 ) );
+		}
 
 		$session_dir = self::get_incoming_dir( $transfer_id );
-		if ( ! file_exists( $session_dir . '/manifest.json' ) ) {
+		$manifest    = self::read_session_manifest( $session_dir );
+		if ( ! $manifest ) {
 			return new WP_Error( 'session_not_found', __( 'Transfer session not found.', 'migrate-lift' ), array( 'status' => 404 ) );
 		}
 
-		$manifest = json_decode( (string) file_get_contents( $session_dir . '/manifest.json' ), true );
+		$archive      = (string) $manifest['archive'];
+		$expected_sha = (string) $manifest['sha256'];
 		$total_chunks = (int) $manifest['total_chunks'];
 
-		// Check all chunks exist
+		// Check all chunks exist.
 		for ( $i = 0; $i < $total_chunks; $i++ ) {
 			$part_file = $session_dir . '/' . sprintf( 'chunk_%06d.part', $i );
 			if ( ! file_exists( $part_file ) ) {
@@ -473,7 +530,7 @@ class Migrate_Lift_Direct_Transfer_Engine {
 			}
 		}
 
-		// Reassemble into temporary assembled file
+		// Reassemble into temporary assembled file.
 		$assembled_file = $session_dir . '/assembled.tmp';
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Direct handle for chunk reassembly.
 		$out = @fopen( $assembled_file, 'wb' );
@@ -501,7 +558,7 @@ class Migrate_Lift_Direct_Transfer_Engine {
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
 		fclose( $out );
 
-		// Verify overall archive checksum
+		// Verify overall archive checksum.
 		$actual_sha = hash_file( 'sha256', $assembled_file );
 		if ( ! hash_equals( $expected_sha, $actual_sha ) ) {
 			wp_delete_file( $assembled_file );
@@ -513,19 +570,48 @@ class Migrate_Lift_Direct_Transfer_Engine {
 			);
 		}
 
-		// Move verified archive into standard MigrateLift storage folder
-		$dest_archive_path = migrate_lift_dir( $archive );
-		// If archive exists, do not overwrite if marked protected
-		if ( file_exists( $dest_archive_path ) && function_exists( 'migrate_lift_archive_is_protected' ) && migrate_lift_archive_is_protected( $archive ) ) {
-			$archive = 'migrated_' . time() . '_' . $archive;
-			$dest_archive_path = migrate_lift_dir( $archive );
+		// Same inspection as a browser upload: the checksum only proves the bytes arrived intact.
+		$report = Migrate_Lift_Import_Engine::verify_archive_security( $assembled_file, $archive );
+		if ( empty( $report['valid'] ) ) {
+			self::cleanup_incoming_session( $transfer_id );
+			$reason = ! empty( $report['errors'] ) ? implode( '; ', $report['errors'] ) : __( 'Archive failed integrity verification.', 'migrate-lift' );
+			return new WP_Error(
+				'archive_rejected',
+				/* translators: %s: Error message. */
+				sprintf( __( 'Archive rejected during inspection: %s', 'migrate-lift' ), $reason ),
+				array( 'status' => 422 )
+			);
 		}
 
-		// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename
-		rename( $assembled_file, $dest_archive_path );
+		// Move the verified archive into the library, never over an existing file.
+		$archive           = wp_unique_filename( migrate_lift_dir(), $archive );
+		$dest_archive_path = migrate_lift_dir( $archive );
 
-		// Clean up session directory
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename
+		if ( ! @rename( $assembled_file, $dest_archive_path ) ) {
+			return new WP_Error( 'archive_store_failed', __( 'Failed moving verified archive to library storage.', 'migrate-lift' ), array( 'status' => 500 ) );
+		}
+
 		self::cleanup_incoming_session( $transfer_id );
+
+		$meta = get_option( 'migrate_lift_backup_metadata', array() );
+		if ( ! is_array( $meta ) ) {
+			$meta = array();
+		}
+		$meta[ $archive ] = array(
+			'name'        => $archive,
+			'file'        => $archive,
+			'size'        => (int) filesize( $dest_archive_path ),
+			'time'        => (int) filemtime( $dest_archive_path ),
+			'verified'    => true,
+			'verified_at' => time(),
+			'status'      => 'ready',
+			'source'      => 'direct_transfer',
+			'manifest'    => $report['manifest'],
+			'warnings'    => $report['warnings'],
+			'format'      => $report['format'],
+		);
+		update_option( 'migrate_lift_backup_metadata', $meta, false );
 
 		Migrate_Lift_Activity_Logger::info(
 			'direct_transfer_received',
@@ -607,15 +693,16 @@ class Migrate_Lift_Direct_Transfer_Engine {
 	 * @param string $pair_id Pair ID.
 	 * @param string $subpath Route subpath (e.g. '/transfer/init').
 	 * @param array  $payload Request data array.
+	 * @param int    $timeout Seconds to wait for the response.
 	 * @return array|WP_Error Decoded response array or WP_Error.
 	 */
-	public static function send_signed_remote_request( $pair_id, $subpath, $payload = array() ) {
+	public static function send_signed_remote_request( $pair_id, $subpath, $payload = array(), $timeout = 60 ) {
 		$pair = Migrate_Lift_Site_Pairing::get_paired_site( $pair_id );
 		if ( ! $pair ) {
 			return new WP_Error( 'pairing_missing', __( 'Pairing record missing.', 'migrate-lift' ) );
 		}
 
-		$endpoint = untrailingslashit( $pair['remote_url'] ) . '/wp-json/' . MIGRATE_LIFT_REST_NAMESPACE . $subpath;
+		$endpoint = Migrate_Lift_Site_Pairing::remote_rest_url( $pair, $subpath );
 		$body_str = wp_json_encode( $payload );
 
 		$headers = Migrate_Lift_Site_Pairing::sign_request( $pair_id, $body_str );
@@ -628,12 +715,12 @@ class Migrate_Lift_Direct_Transfer_Engine {
 
 		$response = wp_remote_post(
 			$endpoint,
-			array(
-				'headers'     => $headers,
-				'body'        => $body_str,
-				'timeout'     => 60,
-				'redirection' => 0,
-				'sslverify'   => apply_filters( 'migrate_lift_ssl_verify', true ),
+			Migrate_Lift_Site_Pairing::request_args(
+				array(
+					'headers' => $headers,
+					'body'    => $body_str,
+					'timeout' => (int) $timeout,
+				)
 			)
 		);
 

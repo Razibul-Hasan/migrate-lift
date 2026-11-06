@@ -58,7 +58,7 @@ test( 'Release QA: Clean uninstallation script (uninstall.php) standard conforma
 
 	const content = fs.readFileSync( uninstallPath, 'utf-8' );
 	assert.ok( content.includes( "defined( 'WP_UNINSTALL_PLUGIN' ) || exit;" ), 'uninstall.php must check WP_UNINSTALL_PLUGIN' );
-	assert.ok( content.includes( 'delete_option' ), 'uninstall.php must clean plugin options' );
+	assert.ok( content.includes( "$wpdb->esc_like( 'migrate_lift_' )" ), 'uninstall.php must clean plugin options' );
 	assert.ok( content.includes( 'wp_clear_scheduled_hook' ), 'uninstall.php must clear scheduled cron events' );
 } );
 

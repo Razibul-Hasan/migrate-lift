@@ -10,7 +10,10 @@
     "migrate-lift.php",
     "uninstall.php",
     "readme.txt",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "src/",
+    "webpack.config.js",
+    "postcss.config.js"
   ],
   "scripts": {
     "build": "wp-scripts build",

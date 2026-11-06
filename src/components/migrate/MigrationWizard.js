@@ -1,5 +1,5 @@
 /**
- * MigrationWizard Component (Parts 13, 14, 15: Site Pairing, Direct Transfer & Migration Wizard)
+ * MigrationWizard Component (Site Pairing, Direct Transfer & Migration Wizard)
  *
  * Implements the 7-step guided server-to-server migration wizard:
  * 1. Connect Sites (Cryptographic HMAC pairing handshake, single-use token, SSRF validation)
@@ -11,7 +11,7 @@
  * 7. Verify & Finish (Staged file & DB replacement, atomic swap, finish report & checklist)
  */
 
-import { useState, useEffect, useCallback, useRef } from '@wordpress/element';
+import { useState, useEffect, useCallback } from '@wordpress/element';
 import {
 	Button,
 	Card,
@@ -50,12 +50,12 @@ import {
 	startDirectTransfer,
 	fetchTransferStatus,
 	cancelTransfer,
-	fetchRestoreDiffPreview,
-	executeRestoreWizard,
+	stepDirectTransfer,
+	createRemoteRecoveryCheckpoint,
+	runRestJob,
 	fetchRemotePreflight,
 	fetchRemoteDiff,
 	executeRemoteApply,
-	post,
 } from '../../utils/api';
 
 const cfg = ( typeof window !== 'undefined' && window.migrateLift ) || {};
@@ -80,8 +80,6 @@ export default function MigrationWizard( { onComplete } ) {
 	const [ pingLatency, setPingLatency ] = useState( null );
 
 	// Step 2: Content Selection State
-	const [ contentScope, setContentScope ] = useState( 'full' );
-	const [ migrationMode, setMigrationMode ] = useState( 'overwrite_after_recovery' );
 	const [ archiveSourceMode, setArchiveSourceMode ] = useState( 'fresh_export' );
 	const [ archives, setArchives ] = useState( [] );
 	const [ selectedArchiveFile, setSelectedArchiveFile ] = useState( null );
@@ -98,7 +96,6 @@ export default function MigrationWizard( { onComplete } ) {
 	const [ transferState, setTransferState ] = useState( null );
 	const [ isTransferring, setIsTransferring ] = useState( false );
 	const [ transferError, setTransferError ] = useState( null );
-	const pollIntervalRef = useRef( null );
 
 	// Step 5: Destination Options State
 	const [ fileMode, setFileMode ] = useState( 'overwrite_matching' );
@@ -107,6 +104,7 @@ export default function MigrationWizard( { onComplete } ) {
 	const [ confirmCleanSync, setConfirmCleanSync ] = useState( false );
 	const [ diffPreview, setDiffPreview ] = useState( null );
 	const [ loadingDiff, setLoadingDiff ] = useState( false );
+	const [ diffError, setDiffError ] = useState( null );
 
 	// Step 6: Confirmation State
 	const [ confirmInput, setConfirmInput ] = useState( '' );
@@ -141,36 +139,66 @@ export default function MigrationWizard( { onComplete } ) {
 		return () => clearInterval( timer );
 	}, [ pairingTokenData, tokenCountdown ] );
 
-	// Poll transfer job if active
+	// Run the transfer job step by step while it is active.
 	useEffect( () => {
 		if ( ! isTransferring || ! transferJobId ) {
-			if ( pollIntervalRef.current ) {
-				clearInterval( pollIntervalRef.current );
-				pollIntervalRef.current = null;
-			}
-			return;
+			return undefined;
 		}
 
-		pollIntervalRef.current = setInterval( async () => {
-			try {
-				const job = await fetchTransferStatus( transferJobId );
-				setTransferState( job );
+		let stopped = false;
+		const wait = ( ms ) => new Promise( ( resolve ) => setTimeout( resolve, ms ) );
 
-				if ( job.state === 'completed' ) {
-					setIsTransferring( false );
-					clearInterval( pollIntervalRef.current );
-				} else if ( job.state === 'failed' ) {
-					setIsTransferring( false );
-					setTransferError( job.error || __( 'Transfer failed unexpectedly.', 'migrate-lift' ) );
-					clearInterval( pollIntervalRef.current );
+		const run = async () => {
+			let failures = 0;
+			while ( ! stopped ) {
+				let stepError = null;
+				try {
+					await stepDirectTransfer( transferJobId );
+				} catch ( err ) {
+					// The job engine counts step failures and fails the job after its retry limit.
+					stepError = err;
 				}
-			} catch ( err ) {
-				// Don't kill transfer immediately on single transient poll failure
+
+				let job = null;
+				try {
+					job = await fetchTransferStatus( transferJobId );
+				} catch ( err ) {
+					stepError = stepError || err;
+				}
+				if ( stopped ) {
+					return;
+				}
+
+				if ( job ) {
+					failures = 0;
+					setTransferState( job );
+					if ( job.state === 'completed' ) {
+						// The destination may have stored the archive under another name.
+						if ( job.checkpoint?.remote_archive ) {
+							setSelectedArchiveFile( job.checkpoint.remote_archive );
+						}
+						setIsTransferring( false );
+						return;
+					}
+					if ( job.state === 'failed' ) {
+						setIsTransferring( false );
+						setTransferError( job.diagnostic_detail || __( 'Transfer failed unexpectedly.', 'migrate-lift' ) );
+						return;
+					}
+				} else if ( ++failures >= 5 ) {
+					setIsTransferring( false );
+					setTransferError( stepError?.message || __( 'Lost contact with this site during the transfer.', 'migrate-lift' ) );
+					return;
+				}
+
+				await wait( stepError ? 3000 : 200 );
 			}
-		}, 1500 );
+		};
+
+		run();
 
 		return () => {
-			if ( pollIntervalRef.current ) clearInterval( pollIntervalRef.current );
+			stopped = true;
 		};
 	}, [ isTransferring, transferJobId ] );
 
@@ -308,45 +336,31 @@ export default function MigrationWizard( { onComplete } ) {
 			// Fallback to local destination_meta check
 		}
 
-		// Fallback check with destination metadata
-		setTimeout( () => {
-			const meta = connectedSite.destination_meta || {};
-			const freeDisk = meta.disk_free_space || 10737418240; // Default fallback: 10GB
-			const checks = [
-				{
-					id: 'remote_disk',
-					label: __( 'Destination Disk Storage Capacity', 'migrate-lift' ),
-					status: freeDisk > 524288000 ? 'pass' : 'fail',
-					detail: sprintf( __( '%s free storage available on destination', 'migrate-lift' ), formatBytes( freeDisk ) ),
-				},
-				{
-					id: 'php_version',
-					label: __( 'PHP Version Compatibility', 'migrate-lift' ),
-					status: 'pass',
-					detail: sprintf( __( 'Destination running PHP %s (Requires >= 7.4)', 'migrate-lift' ), meta.php_version || '8.1' ),
-				},
-				{
-					id: 'write_perms',
-					label: __( 'Destination Folder Writable', 'migrate-lift' ),
-					status: 'pass',
-					detail: __( 'Destination wp-content/migrate-lift-files storage verified', 'migrate-lift' ),
-				},
-				{
-					id: 'upload_limits',
-					label: __( 'HTTPS Chunk Streaming Limits', 'migrate-lift' ),
-					status: 'pass',
-					detail: sprintf( __( 'Max upload limit %s (Chunk size adapted to 2 MB)', 'migrate-lift' ), formatBytes( meta.max_upload_size || 67108864 ) ),
-				},
-			];
+		// The archive is not on the destination yet, so check what the destination reported when it
+		// paired. The full preflight runs again on the destination just before the restore.
+		const meta = connectedSite.destination_meta || {};
+		const freeDisk = Number( meta.disk_free_space ) || 0;
+		const checks = [
+			{
+				id: 'remote_disk',
+				label: __( 'Destination Disk Storage Capacity', 'migrate-lift' ),
+				status: freeDisk > 524288000 ? 'pass' : 'warning',
+				detail: freeDisk > 0
+					? sprintf( __( '%s free storage available on destination', 'migrate-lift' ), formatBytes( freeDisk ) )
+					: __( 'The destination did not report its free disk space.', 'migrate-lift' ),
+			},
+			{
+				id: 'php_version',
+				label: __( 'Destination PHP Version', 'migrate-lift' ),
+				status: meta.php_version ? 'pass' : 'warning',
+				detail: meta.php_version
+					? sprintf( __( 'Destination running PHP %s', 'migrate-lift' ), meta.php_version )
+					: __( 'The destination did not report its PHP version.', 'migrate-lift' ),
+			},
+		];
 
-			const hasBlockers = checks.some( ( c ) => c.status === 'fail' );
-			setPreflightReport( {
-				passed: ! hasBlockers,
-				checks,
-				blockers: hasBlockers ? [ __( 'Insufficient free disk storage on destination server.', 'migrate-lift' ) ] : [],
-			} );
-			setRunningPreflight( false );
-		}, 600 );
+		setPreflightReport( { passed: true, checks, blockers: [] } );
+		setRunningPreflight( false );
 	};
 
 	// Step 3 -> 4 Transition: Start Fresh Export or Select Existing, then Start Transfer
@@ -357,33 +371,25 @@ export default function MigrationWizard( { onComplete } ) {
 
 		let archiveToTransfer = selectedArchiveFile;
 
-		// If user chose fresh export snapshot, trigger export first
+		// If user chose fresh export snapshot, create it first.
 		if ( 'fresh_export' === archiveSourceMode ) {
 			setIsExportingFresh( true );
 			setExportStatusText( __( 'Creating full site backup snapshot for migration…', 'migrate-lift' ) );
 			try {
-				const exportRes = await post( 'migrate_lift_export', { step: 0 } );
-				if ( exportRes?.archive ) {
-					archiveToTransfer = exportRes.archive;
-					setSelectedArchiveFile( exportRes.archive );
-				} else {
-					// Fallback to latest archive if available
-					const list = await fetchArchives();
-					if ( list?.length > 0 ) {
-						archiveToTransfer = list[ 0 ].file;
-						setSelectedArchiveFile( list[ 0 ].file );
+				const exportRes = await runRestJob( 'backup', {}, ( update ) => {
+					if ( update.message ) {
+						setExportStatusText( update.message );
 					}
-				}
+				} );
+				archiveToTransfer = exportRes?.archive || null;
+				setSelectedArchiveFile( archiveToTransfer );
 			} catch ( err ) {
-				// If export had an issue, fallback to first available archive
-				const list = await fetchArchives();
-				if ( list?.length > 0 ) {
-					archiveToTransfer = list[ 0 ].file;
-					setSelectedArchiveFile( list[ 0 ].file );
-				}
-			} finally {
 				setIsExportingFresh( false );
+				setIsTransferring( false );
+				setTransferError( err.message || __( 'Could not create the backup to transfer.', 'migrate-lift' ) );
+				return;
 			}
+			setIsExportingFresh( false );
 		}
 
 		if ( ! archiveToTransfer ) {
@@ -417,25 +423,12 @@ export default function MigrationWizard( { onComplete } ) {
 	const handleProceedToOptions = async () => {
 		setCurrentStep( 5 );
 		setLoadingDiff( true );
+		setDiffError( null );
+		setDiffPreview( null );
 		try {
-			let diff;
-			if ( connectedSite?.pair_id ) {
-				try {
-					diff = await fetchRemoteDiff( connectedSite.pair_id, selectedArchiveFile, fileMode, dbMode, [] );
-				} catch ( _err ) {
-					// Fallback to local diff preview if remote diff preview is unsupported
-					diff = await fetchRestoreDiffPreview( selectedArchiveFile, fileMode, dbMode, [] );
-				}
-			} else {
-				diff = await fetchRestoreDiffPreview( selectedArchiveFile, fileMode, dbMode, [] );
-			}
-			setDiffPreview( diff );
-		} catch ( _err ) {
-			// Provide fallback estimate
-			setDiffPreview( {
-				file_diff: { counts: { create: 0, update: 420, delete: 0, skip: 12 } },
-				db_diff: { tables_to_replace: [ 'posts', 'postmeta', 'options', 'users', 'usermeta' ], tables_untouched: [] },
-			} );
+			setDiffPreview( await fetchRemoteDiff( connectedSite.pair_id, selectedArchiveFile, fileMode, dbMode, [] ) );
+		} catch ( err ) {
+			setDiffError( err.message || __( 'Could not preview the changes on the destination.', 'migrate-lift' ) );
 		} finally {
 			setLoadingDiff( false );
 		}
@@ -449,34 +442,29 @@ export default function MigrationWizard( { onComplete } ) {
 		setApplyPhase( __( 'Creating safety recovery checkpoint snapshot on destination…', 'migrate-lift' ) );
 
 		try {
-			setTimeout( () => {
-				setApplyPhase( __( 'Extracting archive into isolated staging environment…', 'migrate-lift' ) );
-			}, 1200 );
+			await createRemoteRecoveryCheckpoint( connectedSite.pair_id, ( step ) => {
+				setApplyPhase( sprintf(
+					/* translators: 1: Percentage complete, 2: Current step. */
+					__( 'Creating safety recovery checkpoint on destination (%1$d%%): %2$s', 'migrate-lift' ),
+					step.progress || 0,
+					step.message || ''
+				) );
+			} );
 
-			setTimeout( () => {
-				setApplyPhase( __( 'Performing atomic database table swap & URL search-and-replace…', 'migrate-lift' ) );
-			}, 2400 );
+			setApplyPhase( __( 'Replacing files and swapping database tables on destination. Keep this page open…', 'migrate-lift' ) );
 
-			let result;
-			const options = {
-				action: 'apply',
+			const result = await executeRemoteApply( connectedSite.pair_id, selectedArchiveFile, confirmInput.trim(), {
 				file_mode: fileMode,
 				db_mode: dbMode,
 				preserve_admin_user: preserveAdmin,
 				confirm_delete: confirmCleanSync,
-			};
-
-			if ( connectedSite?.pair_id ) {
-				result = await executeRemoteApply( connectedSite.pair_id, selectedArchiveFile, confirmInput.trim(), options );
-			} else {
-				result = await executeRestoreWizard( selectedArchiveFile, confirmInput.trim(), options );
-			}
+			} );
 
 			setApplyResults( result );
 			setApplyPhase( __( 'Migration completed successfully!', 'migrate-lift' ) );
 			if ( onComplete ) onComplete( result );
 		} catch ( err ) {
-			setApplyError( err.message || __( 'Migration restore execution failed. Any staged changes were safely rolled back.', 'migrate-lift' ) );
+			setApplyError( err.message || __( 'Migration restore failed. Check the activity log on the destination site.', 'migrate-lift' ) );
 		} finally {
 			setExecutingApply( false );
 		}
@@ -823,48 +811,8 @@ export default function MigrationWizard( { onComplete } ) {
 							{ __( 'Direct transfer captures a point-in-time snapshot. For high-volume e-commerce stores, schedule migration during off-peak hours or briefly enable maintenance mode during the final switch to avoid lost customer orders or carts.', 'migrate-lift' ) }
 						</InlineNotice>
 
-						<h3 style={ { fontSize: '15px', fontWeight: 600, marginTop: '20px', marginBottom: '12px' } }>
-							{ __( '1. Select Contents to Transfer', 'migrate-lift' ) }
-						</h3>
-						<RadioControl
-							selected={ contentScope }
-							options={ [
-								{
-									label: __( 'Full Site (Recommended: Database + wp-content uploads, themes, plugins)', 'migrate-lift' ),
-									value: 'full',
-								},
-								{
-									label: __( 'Database Only (Lightweight transfer for content, options, and tables)', 'migrate-lift' ),
-									value: 'db_only',
-								},
-								{
-									label: __( 'Custom (Preserves configured exclusions from Settings)', 'migrate-lift' ),
-									value: 'custom',
-								},
-							] }
-							onChange={ setContentScope }
-						/>
-
 						<h3 style={ { fontSize: '15px', fontWeight: 600, marginTop: '24px', marginBottom: '12px' } }>
-							{ __( '2. Migration Strategy', 'migrate-lift' ) }
-						</h3>
-						<RadioControl
-							selected={ migrationMode }
-							options={ [
-								{
-									label: __( 'Overwrite destination after verified recovery (Safe: creates safety checkpoint on destination prior to replace)', 'migrate-lift' ),
-									value: 'overwrite_after_recovery',
-								},
-								{
-									label: __( 'Copy then switch (Stages transfer for testing before domain/DNS switchover)', 'migrate-lift' ),
-									value: 'copy_then_switch',
-								},
-							] }
-							onChange={ setMigrationMode }
-						/>
-
-						<h3 style={ { fontSize: '15px', fontWeight: 600, marginTop: '24px', marginBottom: '12px' } }>
-							{ __( '3. Snapshot Source', 'migrate-lift' ) }
+							{ __( 'Snapshot Source', 'migrate-lift' ) }
 						</h3>
 						<RadioControl
 							selected={ archiveSourceMode }
@@ -1045,13 +993,13 @@ export default function MigrationWizard( { onComplete } ) {
 									<div>
 										<div style={ { fontSize: '11px', color: 'var(--ml-muted)', textTransform: 'uppercase' } }>{ __( 'Transferred', 'migrate-lift' ) }</div>
 										<div style={ { fontWeight: 700, fontSize: '14px', marginTop: '2px' } }>
-											{ formatBytes( transferState?.checkpoint?.bytes_transferred || 4194304 ) }
+											{ formatBytes( transferState?.checkpoint?.bytes_transferred || 0 ) }
 										</div>
 									</div>
 									<div>
 										<div style={ { fontSize: '11px', color: 'var(--ml-muted)', textTransform: 'uppercase' } }>{ __( 'Speed', 'migrate-lift' ) }</div>
 										<div style={ { fontWeight: 700, fontSize: '14px', marginTop: '2px' } }>
-											{ formatBytes( transferState?.checkpoint?.speed_bps || 2097152 ) }/s
+											{ formatBytes( transferState?.checkpoint?.speed_bps || 0 ) }/s
 										</div>
 									</div>
 									<div>
@@ -1113,8 +1061,8 @@ export default function MigrationWizard( { onComplete } ) {
 									selected={ fileMode }
 									options={ [
 										{ label: __( 'Overwrite matching files (Recommended)', 'migrate-lift' ), value: 'overwrite_matching' },
-										{ label: __( 'Keep existing destination files (Add missing only)', 'migrate-lift' ), value: 'keep_missing' },
-										{ label: __( 'Clean sync (Synchronize managed files, remove orphans)', 'migrate-lift' ), value: 'clean_sync' },
+										{ label: __( 'Keep existing destination files (Add missing only)', 'migrate-lift' ), value: 'add_missing' },
+										{ label: __( 'Clean sync (Synchronize managed files, remove orphans)', 'migrate-lift' ), value: 'sync_managed' },
 									] }
 									onChange={ setFileMode }
 								/>
@@ -1137,13 +1085,19 @@ export default function MigrationWizard( { onComplete } ) {
 						</div>
 
 						{ /* Preservation & Search/Replace Options */ }
+						{ diffError && (
+							<Notice status="warning" isDismissible={ false } style={ { marginBottom: '16px' } }>
+								{ diffError }
+							</Notice>
+						) }
+
 						<div style={ { background: 'var(--ml-hover)', padding: '16px', borderRadius: 'var(--ml-radius-sm)', marginBottom: '20px' } }>
 							<CheckboxControl
 								label={ __( 'Preserve destination administrator user account (prevents lockout)', 'migrate-lift' ) }
 								checked={ preserveAdmin }
 								onChange={ setPreserveAdmin }
 							/>
-							{ fileMode === 'clean_sync' && (
+							{ fileMode === 'sync_managed' && (
 								<CheckboxControl
 									label={ __( 'I confirm deletion of orphan files not present in the source archive', 'migrate-lift' ) }
 									checked={ confirmCleanSync }
@@ -1299,13 +1253,13 @@ export default function MigrationWizard( { onComplete } ) {
 									<div style={ { background: 'var(--ml-hover)', padding: '16px', borderRadius: 'var(--ml-radius-sm)', border: '1px solid var(--ml-line)' } }>
 										<div style={ { fontSize: '11px', color: 'var(--ml-muted)', textTransform: 'uppercase' } }>{ __( 'Files Replaced', 'migrate-lift' ) }</div>
 										<div style={ { fontSize: '18px', fontWeight: 700, marginTop: '4px' } }>
-											{ applyResults?.file_results?.total_written || '1,428' }
+											{ applyResults?.file_results?.total_applied ?? 0 }
 										</div>
 									</div>
 									<div style={ { background: 'var(--ml-hover)', padding: '16px', borderRadius: 'var(--ml-radius-sm)', border: '1px solid var(--ml-line)' } }>
 										<div style={ { fontSize: '11px', color: 'var(--ml-muted)', textTransform: 'uppercase' } }>{ __( 'Tables Swapped', 'migrate-lift' ) }</div>
 										<div style={ { fontSize: '18px', fontWeight: 700, marginTop: '4px' } }>
-											{ applyResults?.db_results?.tables_swapped || '26' }
+											{ applyResults?.db_results?.tables_swapped ?? 0 }
 										</div>
 									</div>
 									<div style={ { background: 'var(--ml-hover)', padding: '16px', borderRadius: 'var(--ml-radius-sm)', border: '1px solid var(--ml-line)' } }>

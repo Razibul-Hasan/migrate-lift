@@ -39,7 +39,7 @@ This document outlines the security architecture, authorization principles, stor
 ### 2.4 SQL Injection & Corrupt Deserialization
 - **Threat:** Malicious data inside database dumps triggers SQL injection or PHP object injection during serialized search-and-replace.
 - **Mitigation:**
-  - Low-level database operations utilize direct `mysqli` links with escaping (`mysqli_real_escape_string`) and explicit binary column detection.
+  - Low-level database operations run through `$wpdb`, with values escaped by `esc_sql()`, identifiers backtick-quoted, and explicit binary column detection.
   - Search and replace un-serializes strings using `unserialize( $data, ['allowed_classes' => ['stdClass']] )`, preventing arbitrary PHP object instantiation and PHP Object Injection (POI) attacks.
 
 ### 2.5 Site Pairing & Direct Migration Handshake (Planned)

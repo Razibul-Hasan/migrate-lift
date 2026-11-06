@@ -33,6 +33,7 @@ import {
 	verifyBackup,
 	deleteArchive,
 	getActiveBackupJob,
+	cancelJob,
 } from '../utils/api';
 
 export default function BackupsView( {
@@ -105,6 +106,30 @@ export default function BackupsView( {
 			setIsLoading( false );
 		}
 	}, [ refreshArchives ] );
+
+	// Handle canceling active background job
+	const handleCancelActiveJob = async () => {
+		if ( ! activeBackupJob?.id ) return;
+		if ( ! window.confirm( __( 'Are you sure you want to cancel the in-progress backup?', 'migrate-lift' ) ) ) {
+			return;
+		}
+		try {
+			await cancelJob( activeBackupJob.id );
+			setActiveBackupJob( null );
+			setIsJobDrawerOpen( false );
+			setActionNotice( {
+				status: 'success',
+				message: __( 'Backup job cancelled successfully.', 'migrate-lift' ),
+			} );
+			await checkActiveJob();
+			await loadArchives();
+		} catch ( err ) {
+			setActionNotice( {
+				status: 'error',
+				message: err.message || __( 'Could not cancel job.', 'migrate-lift' ),
+			} );
+		}
+	};
 
 	// Handle sort click
 	const handleSort = ( key ) => {
@@ -298,13 +323,23 @@ export default function BackupsView( {
 							</div>
 						</div>
 					</div>
-					<button
-						type="button"
-						className="ml-btn sm primary"
-						onClick={ () => setIsJobDrawerOpen( true ) }
-					>
-						<span>{ __( 'View Progress', 'migrate-lift' ) }</span>
-					</button>
+					<div style={ { display: 'flex', gap: 8, flexShrink: 0 } }>
+						<button
+							type="button"
+							className="ml-btn sm primary"
+							onClick={ () => setIsJobDrawerOpen( true ) }
+						>
+							<span>{ __( 'View Progress', 'migrate-lift' ) }</span>
+						</button>
+						<button
+							type="button"
+							className="ml-btn sm danger"
+							onClick={ handleCancelActiveJob }
+							title={ __( 'Cancel and reset this backup job', 'migrate-lift' ) }
+						>
+							<span>{ __( 'Cancel', 'migrate-lift' ) }</span>
+						</button>
+					</div>
 				</div>
 			) }
 

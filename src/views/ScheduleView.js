@@ -2,7 +2,7 @@
  * ScheduleView Component
  * Configures reliable automated backup scheduling (Daily / Weekly),
  * site-timezone start times, rolling retention rules, storage alerts,
- * and system crontab instructions (Part 08).
+ * and system crontab instructions.
  *
  * @package MigrateLift
  */

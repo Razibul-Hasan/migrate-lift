@@ -5,7 +5,7 @@
  * Plugin URI:        https://bestwebexpert.com/migrate-lift/
  * Description:       Lightweight site migration, backup and restore for WordPress. Export database and wp-content into one .tgz archive; import on another site with automatic URL replacement.
  * Version:           1.0.0
- * Requires at least: 6.0
+ * Requires at least: 6.6
  * Requires PHP:      7.4
  * Author:            bestwpexpert
  * Author URI:        https://bestwebexpert.com/

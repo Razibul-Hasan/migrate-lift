@@ -78,7 +78,7 @@ function migrate_lift_import_info( $file ) {
 	if ( untrailingslashit( get_option( 'home' ) ) === $manifest['home'] ) {
 		$warnings[] = 'This archive was exported from this same site. Importing it restores the site to that point.';
 	}
-	$free = function_exists( 'disk_free_space' ) ? @disk_free_space( constant( 'WP_CONTENT_DIR' ) ) : false; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+	$free = function_exists( 'disk_free_space' ) ? @disk_free_space( migrate_lift_content_dir() ) : false; // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 	if ( $free && $free < $manifest['bytes'] * 1.2 ) {
 		$warnings[] = sprintf( 'Only %s of disk space is free; the import needs about %s.', size_format( $free ), size_format( $manifest['bytes'] * 1.2 ) );
 	}
@@ -154,7 +154,7 @@ function migrate_lift_import_step( $step, $file = '', $delete_after = true ) {
 			if ( migrate_lift_import_db( $s ) ) {
 				$s['phase'] = 'replace';
 			}
-			$total    = max( 1, (int) @filesize( migrate_lift_dir( 'import-tmp/database.sql' ) ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+			$total    = max( 1, (int) @filesize( migrate_lift_tmp( 'import-tmp', 'database.sql' ) ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
 			$response = migrate_lift_progress( 60 + 20 * $s['sql_pos'] / $total, 'Importing the database…' );
 			break;
 
@@ -195,14 +195,14 @@ function migrate_lift_import_step( $step, $file = '', $delete_after = true ) {
  */
 function migrate_lift_import_prepare() {
 	foreach ( array( 'import-tmp', 'trash' ) as $dir ) {
-		if ( ! migrate_lift_rmdir( migrate_lift_dir( $dir ) ) ) {
+		if ( ! migrate_lift_rmdir( migrate_lift_tmp( $dir ) ) ) {
 			return false;
 		}
 	}
 	foreach ( array_merge( migrate_lift_tables( MIGRATE_LIFT_TMP_PREFIX ), migrate_lift_tables( MIGRATE_LIFT_OLD_PREFIX ) ) as $table ) {
 		migrate_lift_q( 'DROP TABLE IF EXISTS ' . migrate_lift_name( $table ) );
 	}
-	wp_mkdir_p( migrate_lift_dir( 'import-tmp' ) );
+	wp_mkdir_p( migrate_lift_tmp( 'import-tmp' ) );
 	return true;
 }
 
@@ -231,7 +231,7 @@ function migrate_lift_entry_path( $name ) {
  */
 function migrate_lift_import_extract( &$s ) {
 	$tar  = new Migrate_Lift_Tar_Reader( migrate_lift_dir( $s['file'] ), $s['pos'] );
-	$root = migrate_lift_dir( 'import-tmp' ) . '/';
+	$root = migrate_lift_tmp( 'import-tmp' ) . '/';
 	$end  = false;
 
 	while ( ! migrate_lift_out_of_time() ) {
@@ -318,7 +318,7 @@ function migrate_lift_import_db( &$s ) {
 		$s['fix_collation'] = ! migrate_lift_col( "SHOW COLLATION WHERE Collation = 'utf8mb4_0900_ai_ci'" );
 	}
 
-	$in = fopen( migrate_lift_dir( 'import-tmp/database.sql' ), 'rb' );
+	$in = fopen( migrate_lift_tmp( 'import-tmp', 'database.sql' ), 'rb' );
 	fseek( $in, $s['sql_pos'] );
 	$tokens = array( '`' . MIGRATE_LIFT_TOKEN );
 	$tmp    = '`' . MIGRATE_LIFT_TMP_PREFIX;
@@ -488,7 +488,7 @@ function migrate_lift_import_replace( &$s ) {
 		return true;
 	}
 	$needles = migrate_lift_replace_needles( $s, $pairs );
-	$batch   = 200;
+	$batch   = 100;
 
 	while ( $s['rt'] < count( $s['r_tables'] ) && ! migrate_lift_out_of_time() ) {
 		$table = migrate_lift_name( $s['r_tables'][ $s['rt'] ] );
@@ -527,13 +527,12 @@ function migrate_lift_import_replace( &$s ) {
 				}
 				$sql = "SELECT $select FROM $table WHERE $where ORDER BY $order LIMIT $batch";
 			} else {
-				$sql = "SELECT $select FROM $table ORDER BY $order LIMIT {$s['r_off']}, $batch";
+				$sql = "SELECT $select FROM $table ORDER BY $order LIMIT " . (int) $s['r_off'] . ", $batch";
 			}
 
-			$result = migrate_lift_q( $sql );
-			// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_fetch_assoc, WordPress.CodeAnalysis.AssignmentInCondition.FoundInWhileCondition
-			while ( $row = mysqli_fetch_assoc( $result ) ) {
-				++$rows;
+			$fetch = migrate_lift_rows( $sql, ARRAY_A );
+			$rows  = count( $fetch );
+			foreach ( $fetch as $row ) {
 				$set = array();
 				foreach ( $text as $col ) {
 					$value = $row[ $col ];
@@ -554,8 +553,7 @@ function migrate_lift_import_replace( &$s ) {
 				}
 				$s['r_last'] = $row[ $info['pk'][0] ];
 			}
-			// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_free_result
-			mysqli_free_result( $result );
+			unset( $fetch );
 		}
 
 		if ( $rows < $batch ) {
@@ -613,11 +611,10 @@ function migrate_lift_import_fix_options( $s ) {
 	}
 
 	// Keep this plugin active under the folder name it has here.
-	// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_fetch_row
-	$row = mysqli_fetch_row( migrate_lift_q( "SELECT option_value FROM $options WHERE option_name = 'active_plugins'" ) );
-	if ( $row ) {
-		$active = maybe_unserialize( $row[0] );
-		$active = array_values( array_diff( is_array( $active ) ? $active : array(), array( $s['manifest']['plugin'], $s['live']['plugin'] ) ) );
+	$rows = migrate_lift_rows( "SELECT option_value FROM $options WHERE option_name = 'active_plugins'" );
+	if ( $rows ) {
+		$active = maybe_unserialize( $rows[0][0] );
+		$active = array_values( array_diff( is_array( $active ) ? $active : array(), array( $s['manifest']['plugin'] ?? $s['live']['plugin'], $s['live']['plugin'] ) ) );
 		array_unshift( $active, $s['live']['plugin'] );
 		migrate_lift_q( "UPDATE $options SET option_value = " . migrate_lift_e( serialize( $active ) ) . " WHERE option_name = 'active_plugins'" ); // phpcs:ignore
 	}
@@ -631,9 +628,9 @@ function migrate_lift_import_fix_options( $s ) {
  */
 function migrate_lift_import_swap( $s ) {
 	global $wpdb;
-	$content = untrailingslashit( (string) constant( 'WP_CONTENT_DIR' ) );
-	$new     = migrate_lift_dir( 'import-tmp/wp-content' );
-	$trash   = migrate_lift_dir( 'trash' );
+	$content = migrate_lift_content_dir();
+	$new     = migrate_lift_tmp( 'import-tmp', 'wp-content' );
+	$trash   = migrate_lift_tmp( 'trash' );
 	$self    = dirname( $s['live']['plugin'] );
 	$skip    = array( $self, dirname( $s['manifest']['plugin'] ) );
 	$moves   = array();
@@ -739,7 +736,7 @@ function migrate_lift_cleanup_step( $token ) {
 		throw new Exception( esc_html__( 'Invalid cleanup request.', 'migrate-lift' ) );
 	}
 
-	if ( ! migrate_lift_rmdir( migrate_lift_dir( 'trash' ) ) || ! migrate_lift_rmdir( migrate_lift_dir( 'import-tmp' ) ) ) {
+	if ( ! migrate_lift_rmdir( migrate_lift_tmp( 'trash' ) ) || ! migrate_lift_rmdir( migrate_lift_tmp( 'import-tmp' ) ) ) {
 		return migrate_lift_progress( 50, 'Deleting the old files…' );
 	}
 	foreach ( migrate_lift_tables( MIGRATE_LIFT_OLD_PREFIX ) as $table ) {
@@ -761,7 +758,7 @@ function migrate_lift_cleanup_step( $token ) {
 function migrate_lift_clean_step() {
 	migrate_lift_timer_start();
 	foreach ( array( 'export-tmp', 'import-tmp', 'trash' ) as $dir ) {
-		if ( ! migrate_lift_rmdir( migrate_lift_dir( $dir ) ) ) {
+		if ( ! migrate_lift_rmdir( migrate_lift_tmp( $dir ) ) ) {
 			return migrate_lift_progress( 50, 'Deleting temporary files…' );
 		}
 	}

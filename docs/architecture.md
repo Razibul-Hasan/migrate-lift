@@ -31,7 +31,7 @@ Migrate Lift is engineered around a decoupled architecture where a lightweight W
                ▼                    ▼                     ▼
 ┌──────────────────────┐ ┌────────────────────┐ ┌────────────────────────┐
 │ Streaming Archive    │ │ Database Engine    │ │ Search & Replace       │
-│ • Migrate_Lift_Tar_  │ │ • Direct mysqli    │ │ • Serialization-safe   │
+│ • Migrate_Lift_Tar_  │ │ • wpdb batches     │ │ • Serialization-safe   │
 │   Writer / Reader    │ │ • Schema dump      │ │ • Multi-format needle  │
 │ • Incremental chunks │ │ • Staged imports   │ │   transform (JSON/URL) │
 └──────────────────────┘ └────────────────────┘ └────────────────────────┘
