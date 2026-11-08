@@ -200,7 +200,7 @@ function migrate_lift_import_prepare() {
 		}
 	}
 	foreach ( array_merge( migrate_lift_tables( MIGRATE_LIFT_TMP_PREFIX ), migrate_lift_tables( MIGRATE_LIFT_OLD_PREFIX ) ) as $table ) {
-		migrate_lift_q( 'DROP TABLE IF EXISTS ' . migrate_lift_name( $table ) );
+		migrate_lift_q( 'DROP TABLE IF EXISTS %i', array( $table ) );
 	}
 	wp_mkdir_p( migrate_lift_tmp( 'import-tmp' ) );
 	return true;
@@ -315,7 +315,7 @@ function migrate_lift_import_extract( &$s ) {
  */
 function migrate_lift_import_db( &$s ) {
 	if ( ! isset( $s['fix_collation'] ) ) {
-		$s['fix_collation'] = ! migrate_lift_col( "SHOW COLLATION WHERE Collation = 'utf8mb4_0900_ai_ci'" );
+		$s['fix_collation'] = ! migrate_lift_col( 'SHOW COLLATION WHERE Collation = %s', array( 'utf8mb4_0900_ai_ci' ) );
 	}
 
 	$in = fopen( migrate_lift_tmp( 'import-tmp', 'database.sql' ), 'rb' );
@@ -356,7 +356,7 @@ function migrate_lift_import_db( &$s ) {
 			continue; // Only our own statement types are run.
 		}
 
-		migrate_lift_q( $line );
+		migrate_lift_run_dump_statement( $line );
 		$s['sql_pos'] = ftell( $in );
 	}
 	fclose( $in );
@@ -491,8 +491,8 @@ function migrate_lift_import_replace( &$s ) {
 	$batch   = 100;
 
 	while ( $s['rt'] < count( $s['r_tables'] ) && ! migrate_lift_out_of_time() ) {
-		$table = migrate_lift_name( $s['r_tables'][ $s['rt'] ] );
-		$info  = migrate_lift_table_info( $s['r_tables'][ $s['rt'] ] );
+		$table = $s['r_tables'][ $s['rt'] ];
+		$info  = migrate_lift_table_info( $table );
 		$text  = array();
 		foreach ( $info['cols'] as $i => $col ) {
 			if ( $info['text'][ $i ] && ! in_array( $col, $info['pk'], true ) ) {
@@ -507,30 +507,36 @@ function migrate_lift_import_replace( &$s ) {
 			// No key to update rows by: plain REPLACE(), not serialization-safe, but such tables are rare.
 			foreach ( $text as $col ) {
 				foreach ( $pairs as $from => $to ) {
-					migrate_lift_q( "UPDATE $table SET " . migrate_lift_name( $col ) . ' = REPLACE(' . migrate_lift_name( $col ) . ', ' . migrate_lift_e( $from ) . ', ' . migrate_lift_e( $to ) . ')' );
+					migrate_lift_q( 'UPDATE %i SET %i = REPLACE(%i, %s, %s)', array( $table, $col, $col, $from, $to ) );
 				}
 			}
 		} else {
-			$select = implode( ',', array_map( 'migrate_lift_name', array_merge( $info['pk'], $text ) ) );
-			$order  = implode( ',', array_map( 'migrate_lift_name', $info['pk'] ) );
+			$columns = array_merge( $info['pk'], $text );
+			$select  = migrate_lift_name_placeholders( count( $columns ) );
+			$order   = migrate_lift_name_placeholders( count( $info['pk'] ) );
+			$args    = array_merge( $columns, array( $table ) );
 			if ( 1 === count( $info['pk'] ) ) {
 				// Single key: only fetch rows that contain a needle, paging by key.
 				$match = array();
 				foreach ( $text as $col ) {
 					foreach ( $needles as $needle ) {
-						$match[] = 'INSTR(' . migrate_lift_name( $col ) . ', ' . migrate_lift_e( $needle ) . ') > 0';
+						$match[] = 'INSTR(%i, %s) > 0';
+						array_push( $args, $col, $needle );
 					}
 				}
 				$where = '(' . implode( ' OR ', $match ) . ')';
 				if ( null !== $s['r_last'] ) {
-					$where .= ' AND ' . $order . ' > ' . migrate_lift_e( $s['r_last'] );
+					$where .= ' AND %i > %s';
+					array_push( $args, $info['pk'][0], $s['r_last'] );
 				}
-				$sql = "SELECT $select FROM $table WHERE $where ORDER BY $order LIMIT $batch";
+				$sql = "SELECT $select FROM %i WHERE $where ORDER BY $order LIMIT %d";
+				array_push( $args, $info['pk'][0], $batch );
 			} else {
-				$sql = "SELECT $select FROM $table ORDER BY $order LIMIT " . (int) $s['r_off'] . ", $batch";
+				$sql  = "SELECT $select FROM %i ORDER BY $order LIMIT %d, %d";
+				$args = array_merge( $args, $info['pk'], array( (int) $s['r_off'], $batch ) );
 			}
 
-			$fetch = migrate_lift_rows( $sql, ARRAY_A );
+			$fetch = migrate_lift_rows( $sql, $args, ARRAY_A );
 			$rows  = count( $fetch );
 			foreach ( $fetch as $row ) {
 				$set = array();
@@ -541,15 +547,15 @@ function migrate_lift_import_replace( &$s ) {
 					}
 					$new = migrate_lift_replace_value( $value, $pairs );
 					if ( $new !== $value ) {
-						$set[] = migrate_lift_name( $col ) . ' = ' . migrate_lift_e( $new );
+						$set[ $col ] = $new;
 					}
 				}
 				if ( $set ) {
 					$key = array();
 					foreach ( $info['pk'] as $col ) {
-						$key[] = migrate_lift_name( $col ) . ' = ' . migrate_lift_e( $row[ $col ] );
+						$key[ $col ] = $row[ $col ];
 					}
-					migrate_lift_q( "UPDATE $table SET " . implode( ', ', $set ) . ' WHERE ' . implode( ' AND ', $key ) );
+					migrate_lift_update_row( $table, $set, $key );
 				}
 				$s['r_last'] = $row[ $info['pk'][0] ];
 			}
@@ -591,32 +597,36 @@ function migrate_lift_has_needle( $value, $needles ) {
  */
 function migrate_lift_import_fix_options( $s ) {
 	global $wpdb;
-	$options = migrate_lift_name( MIGRATE_LIFT_TMP_PREFIX . 'options' );
+	$options = MIGRATE_LIFT_TMP_PREFIX . 'options';
 	$old     = $s['manifest']['prefix'];
 	$new     = $s['live']['prefix'];
 
 	foreach ( array( 'home', 'siteurl' ) as $key ) {
-		migrate_lift_q( "UPDATE $options SET option_value = " . migrate_lift_e( $s['live'][ $key ] ) . ' WHERE option_name = ' . migrate_lift_e( $key ) );
+		migrate_lift_q( 'UPDATE %i SET option_value = %s WHERE option_name = %s', array( $options, $s['live'][ $key ], $key ) );
 	}
 
 	// Cached data from the old site; WordPress rebuilds it.
-	migrate_lift_q( "DELETE FROM $options WHERE option_name LIKE '\\_transient\\_%' OR option_name LIKE '\\_site\\_transient\\_%' OR option_name = 'rewrite_rules'" );
+	migrate_lift_q(
+		'DELETE FROM %i WHERE option_name LIKE %s OR option_name LIKE %s OR option_name = %s',
+		array( $options, $wpdb->esc_like( '_transient_' ) . '%', $wpdb->esc_like( '_site_transient_' ) . '%', 'rewrite_rules' )
+	);
 
 	// The table prefix is part of some keys.
 	if ( $old !== $new ) {
-		migrate_lift_q( "UPDATE $options SET option_name = " . migrate_lift_e( $new . 'user_roles' ) . ' WHERE option_name = ' . migrate_lift_e( $old . 'user_roles' ) );
-		$usermeta = migrate_lift_name( MIGRATE_LIFT_TMP_PREFIX . 'usermeta' );
-		$like     = migrate_lift_e( $wpdb->esc_like( $old ) . '%' );
-		migrate_lift_q( "UPDATE $usermeta SET meta_key = CONCAT(" . migrate_lift_e( $new ) . ', SUBSTRING(meta_key, ' . ( strlen( $old ) + 1 ) . ")) WHERE meta_key LIKE $like" );
+		migrate_lift_q( 'UPDATE %i SET option_name = %s WHERE option_name = %s', array( $options, $new . 'user_roles', $old . 'user_roles' ) );
+		migrate_lift_q(
+			'UPDATE %i SET meta_key = CONCAT(%s, SUBSTRING(meta_key, %d)) WHERE meta_key LIKE %s',
+			array( MIGRATE_LIFT_TMP_PREFIX . 'usermeta', $new, strlen( $old ) + 1, $wpdb->esc_like( $old ) . '%' )
+		);
 	}
 
 	// Keep this plugin active under the folder name it has here.
-	$rows = migrate_lift_rows( "SELECT option_value FROM $options WHERE option_name = 'active_plugins'" );
+	$rows = migrate_lift_rows( 'SELECT option_value FROM %i WHERE option_name = %s', array( $options, 'active_plugins' ) );
 	if ( $rows ) {
 		$active = maybe_unserialize( $rows[0][0] );
 		$active = array_values( array_diff( is_array( $active ) ? $active : array(), array( $s['manifest']['plugin'] ?? $s['live']['plugin'], $s['live']['plugin'] ) ) );
 		array_unshift( $active, $s['live']['plugin'] );
-		migrate_lift_q( "UPDATE $options SET option_value = " . migrate_lift_e( serialize( $active ) ) . " WHERE option_name = 'active_plugins'" ); // phpcs:ignore
+		migrate_lift_q( 'UPDATE %i SET option_value = %s WHERE option_name = %s', array( $options, serialize( $active ), 'active_plugins' ) ); // phpcs:ignore
 	}
 }
 
@@ -690,7 +700,7 @@ function migrate_lift_import_swap( $s ) {
 		$renames = array();
 		foreach ( migrate_lift_tables( $prefix ) as $table ) {
 			if ( 0 !== strpos( $table, MIGRATE_LIFT_TMP_PREFIX ) && 0 !== strpos( $table, MIGRATE_LIFT_OLD_PREFIX ) ) {
-				$renames[] = migrate_lift_name( $table ) . ' TO ' . migrate_lift_name( MIGRATE_LIFT_OLD_PREFIX . substr( $table, strlen( $prefix ) ) );
+				$renames[] = array( $table, MIGRATE_LIFT_OLD_PREFIX . substr( $table, strlen( $prefix ) ) );
 			}
 		}
 		$imported = migrate_lift_tables( MIGRATE_LIFT_TMP_PREFIX );
@@ -698,9 +708,9 @@ function migrate_lift_import_swap( $s ) {
 			throw new Exception( esc_html__( 'The imported options table is missing. Import again.', 'migrate-lift' ) );
 		}
 		foreach ( $imported as $table ) {
-			$renames[] = migrate_lift_name( $table ) . ' TO ' . migrate_lift_name( $prefix . substr( $table, strlen( MIGRATE_LIFT_TMP_PREFIX ) ) );
+			$renames[] = array( $table, $prefix . substr( $table, strlen( MIGRATE_LIFT_TMP_PREFIX ) ) );
 		}
-		migrate_lift_q( 'RENAME TABLE ' . implode( ', ', $renames ) );
+		migrate_lift_rename_tables( $renames );
 	} catch ( Throwable $e ) {
 		foreach ( array_reverse( $moves ) as $done ) {
 			migrate_lift_move( $done[1], $done[0] );
@@ -740,7 +750,7 @@ function migrate_lift_cleanup_step( $token ) {
 		return migrate_lift_progress( 50, 'Deleting the old files…' );
 	}
 	foreach ( migrate_lift_tables( MIGRATE_LIFT_OLD_PREFIX ) as $table ) {
-		migrate_lift_q( 'DROP TABLE IF EXISTS ' . migrate_lift_name( $table ) );
+		migrate_lift_q( 'DROP TABLE IF EXISTS %i', array( $table ) );
 	}
 	if ( $s['delete_after'] && is_file( migrate_lift_dir( $s['file'] ) ) ) {
 		wp_delete_file( migrate_lift_dir( $s['file'] ) );
@@ -766,7 +776,7 @@ function migrate_lift_clean_step() {
 		wp_delete_file( $file );
 	}
 	foreach ( array_merge( migrate_lift_tables( MIGRATE_LIFT_TMP_PREFIX ), migrate_lift_tables( MIGRATE_LIFT_OLD_PREFIX ) ) as $table ) {
-		migrate_lift_q( 'DROP TABLE IF EXISTS ' . migrate_lift_name( $table ) );
+		migrate_lift_q( 'DROP TABLE IF EXISTS %i', array( $table ) );
 	}
 	return migrate_lift_progress( 100, 'Temporary files removed.', array( 'done' => true ) );
 }

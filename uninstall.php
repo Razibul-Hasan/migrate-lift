@@ -29,7 +29,7 @@ $wpdb->query(
 
 // Drop the temporary tables of an unfinished import.
 foreach ( array_merge( migrate_lift_tables( MIGRATE_LIFT_TMP_PREFIX ), migrate_lift_tables( MIGRATE_LIFT_OLD_PREFIX ) ) as $migrate_lift_table ) {
-	migrate_lift_q( 'DROP TABLE IF EXISTS ' . migrate_lift_name( $migrate_lift_table ) );
+	migrate_lift_q( 'DROP TABLE IF EXISTS %i', array( $migrate_lift_table ) );
 }
 
 // Delete the storage folder: archives, job records, logs and temporary files.

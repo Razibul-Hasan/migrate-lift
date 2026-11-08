@@ -1167,7 +1167,7 @@ class Migrate_Lift_Backup_Engine {
 			$target = migrate_lift_name( MIGRATE_LIFT_TOKEN . substr( $table, $cut ) );
 
 			if ( 0 === $db_state['row_offset'] ) {
-				$created = migrate_lift_rows( 'SHOW CREATE TABLE ' . migrate_lift_name( $table ) );
+				$created = migrate_lift_rows( 'SHOW CREATE TABLE %i', array( $table ) );
 				$create  = preg_replace( '/^CREATE TABLE `[^`]+`/', 'CREATE TABLE ' . $target, $created[0][1] );
 				$create  = str_replace( 'REFERENCES `' . $wpdb->prefix, 'REFERENCES `' . MIGRATE_LIFT_TOKEN, $create );
 				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fwrite
@@ -1176,9 +1176,12 @@ class Migrate_Lift_Backup_Engine {
 
 			$info   = migrate_lift_table_info( $table );
 			$cols   = implode( ',', array_map( 'migrate_lift_name', $info['cols'] ) );
-			$order  = $info['pk'] ? ' ORDER BY ' . implode( ',', array_map( 'migrate_lift_name', $info['pk'] ) ) : '';
+			$order  = $info['pk'] ? ' ORDER BY ' . migrate_lift_name_placeholders( count( $info['pk'] ) ) : '';
 			$batch  = isset( $db_state['batch'] ) ? (int) $db_state['batch'] : 100;
-			$fetch  = migrate_lift_rows( "SELECT $cols FROM " . migrate_lift_name( $table ) . "$order LIMIT " . (int) $db_state['row_offset'] . ", $batch" );
+			$fetch  = migrate_lift_rows(
+				'SELECT ' . migrate_lift_name_placeholders( count( $info['cols'] ) ) . ' FROM %i' . $order . ' LIMIT %d, %d',
+				array_merge( $info['cols'], array( $table ), $info['pk'], array( (int) $db_state['row_offset'], $batch ) )
+			);
 			$head   = "INSERT INTO $target ($cols) VALUES ";
 			$values = array();
 			$length = 0;

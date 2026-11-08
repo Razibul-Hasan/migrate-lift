@@ -15,6 +15,23 @@ const assert = require( 'node:assert/strict' );
 const fs = require( 'node:fs' );
 const path = require( 'node:path' );
 
+test( 'Security Audit: Queries use prepare(), and only dump replay runs raw SQL', () => {
+	const dir = path.join( __dirname, '../includes' );
+	const sources = fs.readdirSync( dir ).map( ( name ) => fs.readFileSync( path.join( dir, name ), 'utf-8' ) );
+	sources.push( fs.readFileSync( path.join( __dirname, '../uninstall.php' ), 'utf-8' ) );
+	const code = sources.join( '\n' );
+
+	assert.ok( ! /\bmysqli_/.test( code ), 'Database access must go through $wpdb' );
+
+	const raw = code.match( /\$wpdb->(?:query|get_results|get_row|get_var|get_col)\(\s*\$(?!wpdb->prepare)\w+/g ) || [];
+	assert.deepEqual( raw, [ '$wpdb->query( $statement' ], 'Only migrate_lift_run_dump_statement() may run unprepared SQL' );
+
+	assert.ok(
+		! /migrate_lift_(?:q|rows|col)\([^;]*migrate_lift_(?:e|name)\(/.test( code ),
+		'Queries must use placeholders, not migrate_lift_e() or migrate_lift_name()'
+	);
+} );
+
 test( 'Security Audit: Every REST API route declares an explicit permission callback', () => {
 	const restApiPhp = fs.readFileSync( path.join( __dirname, '../includes/rest-api.php' ), 'utf-8' );
 

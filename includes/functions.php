@@ -193,16 +193,17 @@ function migrate_lift_progress( $progress, $message, $extra = array() ) {
  * Runs a statement through wpdb and throws on error. Errors are thrown rather than printed, so
  * they cannot break the JSON response of a running step.
  *
- * Identifiers in $sql are quoted with migrate_lift_name() and values with migrate_lift_e().
+ * Everything goes through $wpdb->prepare(): table and column names use %i, values use %s and %d.
  *
- * @param string $sql SQL.
+ * @param string $sql  Query template.
+ * @param array  $args Placeholder values.
  * @return int|bool
  */
-function migrate_lift_q( $sql ) {
+function migrate_lift_q( $sql, $args = array() ) {
 	global $wpdb;
 	$suppress = $wpdb->suppress_errors( true );
-	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery -- Whole-site dump and restore on dynamic tables; see the docblock.
-	$result = $wpdb->query( $sql );
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery -- Dynamic tables during dump and restore; the template only holds placeholders.
+	$result = $wpdb->query( $wpdb->prepare( $sql, $args ) );
 	$wpdb->suppress_errors( $suppress );
 	if ( false === $result ) {
 		throw new Exception( esc_html( 'Database error: ' . $wpdb->last_error . ' in: ' . substr( $sql, 0, 200 ) ) );
@@ -211,18 +212,114 @@ function migrate_lift_q( $sql ) {
 }
 
 /**
+ * Replays one statement from an archive's database.sql. This is the only query that does not use
+ * $wpdb->prepare(), because the statement is complete SQL already, and its data can contain % signs.
+ *
+ * Callers must only pass CREATE TABLE, INSERT and DROP TABLE IF EXISTS statements that they have
+ * already rewritten to the temporary table prefix. The live tables are not touched.
+ *
+ * @param string $statement Complete statement.
+ * @return int|bool
+ */
+function migrate_lift_run_dump_statement( $statement ) {
+	global $wpdb;
+	$suppress = $wpdb->suppress_errors( true );
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery, PluginCheck.Security.DirectDB.UnescapedDBParameter -- Restoring a dump; see the docblock.
+	$result = $wpdb->query( $statement );
+	$wpdb->suppress_errors( $suppress );
+	if ( false === $result ) {
+		throw new Exception( esc_html( 'Database error: ' . $wpdb->last_error . ' in: ' . substr( $statement, 0, 200 ) ) );
+	}
+	return $result;
+}
+
+/**
+ * Builds a comma-separated list of table or column name placeholders.
+ *
+ * @param int $count How many names.
+ * @return string
+ */
+function migrate_lift_name_placeholders( $count ) {
+	return implode( ',', array_fill( 0, $count, '%i' ) );
+}
+
+/**
+ * Writes a row, keeping NULL values as NULL (a %s placeholder would turn them into empty strings).
+ *
+ * @param string $verb  INSERT or REPLACE.
+ * @param string $table Table.
+ * @param array  $row   Values by column name.
+ * @return int|bool
+ */
+function migrate_lift_write_row( $verb, $table, $row ) {
+	$places = array();
+	$values = array();
+	foreach ( $row as $value ) {
+		if ( null === $value ) {
+			$places[] = 'NULL';
+		} else {
+			$places[] = '%s';
+			$values[] = $value;
+		}
+	}
+	$sql = ( 'REPLACE' === $verb ? 'REPLACE' : 'INSERT' ) . ' INTO %i (' . migrate_lift_name_placeholders( count( $row ) ) . ') VALUES (' . implode( ',', $places ) . ')';
+	return migrate_lift_q( $sql, array_merge( array( $table ), array_keys( $row ), $values ) );
+}
+
+/**
+ * Updates text columns of one row, found by its primary key.
+ *
+ * @param string $table   Table.
+ * @param array  $changes New values by column name.
+ * @param array  $key     Primary key values by column name.
+ * @return int|bool
+ */
+function migrate_lift_update_row( $table, $changes, $key ) {
+	$set   = array();
+	$where = array();
+	$args  = array( $table );
+	foreach ( $changes as $col => $value ) {
+		$set[]  = '%i = %s';
+		$args[] = $col;
+		$args[] = $value;
+	}
+	foreach ( $key as $col => $value ) {
+		$where[] = '%i = %s';
+		$args[]  = $col;
+		$args[]  = $value;
+	}
+	return migrate_lift_q( 'UPDATE %i SET ' . implode( ', ', $set ) . ' WHERE ' . implode( ' AND ', $where ), $args );
+}
+
+/**
+ * Renames tables in one atomic statement.
+ *
+ * @param array $renames List of array( from, to ) pairs.
+ * @return int|bool
+ */
+function migrate_lift_rename_tables( $renames ) {
+	$args = array();
+	foreach ( $renames as $pair ) {
+		$args[] = $pair[0];
+		$args[] = $pair[1];
+	}
+	return migrate_lift_q( 'RENAME TABLE ' . implode( ', ', array_fill( 0, count( $renames ), '%i TO %i' ) ), $args );
+}
+
+/**
  * Returns all rows of a query and throws on error. wpdb's buffers are released straight away,
  * so a batch of large rows is only held in memory once while it is processed.
  *
- * @param string $sql    SQL.
+ * @param string $sql    Query template.
+ * @param array  $args   Placeholder values.
  * @param string $output ARRAY_N (values in column order) or ARRAY_A.
  * @return array
  */
-function migrate_lift_rows( $sql, $output = ARRAY_N ) {
+function migrate_lift_rows( $sql, $args = array(), $output = ARRAY_N ) {
 	global $wpdb;
 	$suppress = $wpdb->suppress_errors( true );
-	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery -- Whole-site dump and restore on dynamic tables; see migrate_lift_q().
-	$rows  = $wpdb->get_results( $sql, $output );
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery -- Dynamic tables during dump and restore; see migrate_lift_q().
+	$rows  = $wpdb->get_results( $wpdb->prepare( $sql, $args ), $output );
 	$error = $wpdb->last_error;
 	$wpdb->suppress_errors( $suppress );
 	$wpdb->flush();
@@ -249,8 +346,8 @@ function migrate_lift_next_batch( $batch, $bytes, $max ) {
 }
 
 /**
- * Quotes a value for SQL. The result is also written to database.sql, where wpdb's placeholder
- * escape for % would corrupt the data, so that escape is removed here.
+ * Quotes a value for the database.sql file. Never used to run a query. wpdb's placeholder escape
+ * for % would corrupt the file's data, so that escape is removed here.
  *
  * @param string|null $value Value.
  * @return string
@@ -277,9 +374,9 @@ function migrate_lift_bit_literal( $value ) {
  * @param string $sql SQL.
  * @return array
  */
-function migrate_lift_col( $sql ) {
+function migrate_lift_col( $sql, $args = array() ) {
 	$out = array();
-	foreach ( migrate_lift_rows( $sql ) as $row ) {
+	foreach ( migrate_lift_rows( $sql, $args ) as $row ) {
 		$out[] = $row[0];
 	}
 	return $out;
@@ -289,9 +386,9 @@ function migrate_lift_col( $sql ) {
  * Session settings for dump and import: full UTF-8, no strict mode (WordPress has zero dates), no FK checks.
  */
 function migrate_lift_db_session() {
-	migrate_lift_q( 'SET NAMES utf8mb4' );
-	migrate_lift_q( "SET SESSION sql_mode = 'NO_AUTO_VALUE_ON_ZERO'" );
-	migrate_lift_q( 'SET foreign_key_checks = 0' );
+	migrate_lift_q( 'SET NAMES %s', array( 'utf8mb4' ) );
+	migrate_lift_q( 'SET SESSION sql_mode = %s', array( 'NO_AUTO_VALUE_ON_ZERO' ) );
+	migrate_lift_q( 'SET foreign_key_checks = %d', array( 0 ) );
 }
 
 /**
@@ -303,10 +400,8 @@ function migrate_lift_db_session() {
 function migrate_lift_tables( $prefix ) {
 	global $wpdb;
 	$tables = migrate_lift_col(
-		$wpdb->prepare(
-			"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME LIKE %s ORDER BY TABLE_NAME",
-			$wpdb->esc_like( $prefix ) . '%'
-		)
+		"SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' AND TABLE_NAME LIKE %s ORDER BY TABLE_NAME",
+		array( $wpdb->esc_like( $prefix ) . '%' )
 	);
 
 	// A prefix such as wp_ also matches wp_shop_options. Those tables belong to another WordPress
@@ -342,7 +437,7 @@ function migrate_lift_table_info( $table ) {
 		'text' => array(),
 		'pk'   => array(),
 	);
-	foreach ( migrate_lift_rows( 'SHOW COLUMNS FROM ' . migrate_lift_name( $table ), ARRAY_A ) as $c ) {
+	foreach ( migrate_lift_rows( 'SHOW COLUMNS FROM %i', array( $table ), ARRAY_A ) as $c ) {
 		if ( false !== stripos( (string) $c['Extra'], 'GENERATED' ) ) {
 			continue; // Generated columns can't be inserted.
 		}
@@ -359,7 +454,7 @@ function migrate_lift_table_info( $table ) {
 }
 
 /**
- * Backtick-quotes a table or column name.
+ * Backtick-quotes a table or column name for the database.sql file. Never used to run a query.
  *
  * @param string $name Name.
  * @return string

@@ -173,7 +173,7 @@ class Migrate_Lift_Import_Engine {
 		$is_writable = function_exists( 'wp_is_writable' ) ? wp_is_writable( $staging_dir ) : is_writable( $staging_dir );
 		$exposure    = self::check_web_exposure( false );
 
-		$rel_path = 'wp-content/' . MIGRATE_LIFT_STORE . '/' . self::STAGING_SUBDIR . '/';
+		$rel_path = basename( migrate_lift_content_dir() ) . '/' . MIGRATE_LIFT_STORE . '/' . self::STAGING_SUBDIR . '/';
 
 		return array(
 			'staging_dir'          => $staging_dir,

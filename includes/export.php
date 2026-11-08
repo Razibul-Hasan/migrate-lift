@@ -189,7 +189,7 @@ function migrate_lift_export_db( &$s ) {
 		$target = migrate_lift_name( MIGRATE_LIFT_TOKEN . substr( $table, $cut ) );
 
 		if ( 0 === $s['row'] ) {
-			$created = migrate_lift_rows( 'SHOW CREATE TABLE ' . migrate_lift_name( $table ) );
+			$created = migrate_lift_rows( 'SHOW CREATE TABLE %i', array( $table ) );
 			$create  = preg_replace( '/^CREATE TABLE `[^`]+`/', 'CREATE TABLE ' . $target, $created[0][1] );
 			$create  = str_replace( 'REFERENCES `' . $wpdb->prefix, 'REFERENCES `' . MIGRATE_LIFT_TOKEN, $create );
 			fwrite( $out, "DROP TABLE IF EXISTS $target;\n" . str_replace( array( "\r\n", "\n" ), ' ', $create ) . ";\n" );
@@ -197,9 +197,12 @@ function migrate_lift_export_db( &$s ) {
 
 		$info   = migrate_lift_table_info( $table );
 		$cols   = implode( ',', array_map( 'migrate_lift_name', $info['cols'] ) );
-		$order  = $info['pk'] ? ' ORDER BY ' . implode( ',', array_map( 'migrate_lift_name', $info['pk'] ) ) : '';
+		$order  = $info['pk'] ? ' ORDER BY ' . migrate_lift_name_placeholders( count( $info['pk'] ) ) : '';
 		$batch  = isset( $s['batch'] ) ? (int) $s['batch'] : 100;
-		$fetch  = migrate_lift_rows( "SELECT $cols FROM " . migrate_lift_name( $table ) . "$order LIMIT " . (int) $s['row'] . ", $batch" );
+		$fetch  = migrate_lift_rows(
+			'SELECT ' . migrate_lift_name_placeholders( count( $info['cols'] ) ) . ' FROM %i' . $order . ' LIMIT %d, %d',
+			array_merge( $info['cols'], array( $table ), $info['pk'], array( (int) $s['row'], $batch ) )
+		);
 		$head   = "INSERT INTO $target ($cols) VALUES ";
 		$values = array();
 		$length = 0;

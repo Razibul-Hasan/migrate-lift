@@ -320,7 +320,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 		if ( function_exists( 'migrate_lift_tables' ) ) {
 			try {
 				foreach ( migrate_lift_tables( MIGRATE_LIFT_TMP_PREFIX ) as $table ) {
-					migrate_lift_q( 'DROP TABLE IF EXISTS ' . migrate_lift_name( $table ) );
+					migrate_lift_q( 'DROP TABLE IF EXISTS %i', array( $table ) );
 				}
 			} catch ( Throwable $e ) {
 				// Continue.
@@ -331,7 +331,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 		$fix_collation = false;
 		if ( function_exists( 'migrate_lift_col' ) ) {
 			try {
-				$has_0900 = migrate_lift_col( "SHOW COLLATION WHERE Collation = 'utf8mb4_0900_ai_ci'" );
+				$has_0900 = migrate_lift_col( 'SHOW COLLATION WHERE Collation = %s', array( 'utf8mb4_0900_ai_ci' ) );
 				$fix_collation = empty( $has_0900 );
 			} catch ( Throwable $e ) {
 				$fix_collation = true;
@@ -375,7 +375,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 
 			if ( $matched && function_exists( 'migrate_lift_q' ) ) {
 				try {
-					migrate_lift_q( $line );
+					migrate_lift_run_dump_statement( $line );
 				} catch ( Throwable $e ) {
 					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose
 					fclose( $handle );
@@ -431,23 +431,21 @@ class Migrate_Lift_Database_Replacement_Engine {
 			if ( empty( $info['pk'] ) ) {
 				foreach ( $text_cols as $col ) {
 					foreach ( $pairs as $from => $to ) {
-						$changed = migrate_lift_q( 'UPDATE ' . migrate_lift_name( $table_name ) . ' SET ' . migrate_lift_name( $col ) . ' = REPLACE(' . migrate_lift_name( $col ) . ', ' . migrate_lift_e( $from ) . ', ' . migrate_lift_e( $to ) . ')' );
+						$changed = migrate_lift_q( 'UPDATE %i SET %i = REPLACE(%i, %s, %s)', array( $table_name, $col, $col, $from, $to ) );
 						$total_replacements += (int) $changed;
 					}
 				}
 				continue;
 			}
 
-			$table_escaped = migrate_lift_name( $table_name );
-			$select_cols   = implode( ',', array_map( 'migrate_lift_name', array_merge( $info['pk'], $text_cols ) ) );
-			$order_cols    = implode( ',', array_map( 'migrate_lift_name', $info['pk'] ) );
+			$select_cols = array_merge( $info['pk'], $text_cols );
+			$query       = 'SELECT ' . migrate_lift_name_placeholders( count( $select_cols ) ) . ' FROM %i ORDER BY ' . migrate_lift_name_placeholders( count( $info['pk'] ) ) . ' LIMIT %d, %d';
 
-			$query  = "SELECT $select_cols FROM $table_escaped ORDER BY $order_cols";
 			$batch  = 100;
 			$offset = 0;
 			// Read in pages: only text outside the key changes here, so the row order stays stable.
 			do {
-				$rows = migrate_lift_rows( "$query LIMIT $offset, $batch", ARRAY_A );
+				$rows = migrate_lift_rows( $query, array_merge( $select_cols, array( $table_name ), $info['pk'], array( $offset, $batch ) ), ARRAY_A );
 				foreach ( $rows as $row ) {
 					$updates = array();
 					foreach ( $text_cols as $col ) {
@@ -457,7 +455,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 						}
 						$replaced = self::recursive_serialization_replace( $original, $pairs );
 						if ( $replaced !== $original ) {
-							$updates[] = migrate_lift_name( $col ) . ' = ' . migrate_lift_e( $replaced );
+							$updates[ $col ] = $replaced;
 							++$total_replacements;
 						}
 					}
@@ -465,9 +463,9 @@ class Migrate_Lift_Database_Replacement_Engine {
 					if ( ! empty( $updates ) ) {
 						$where = array();
 						foreach ( $info['pk'] as $pk_col ) {
-							$where[] = migrate_lift_name( $pk_col ) . ' = ' . migrate_lift_e( $row[ $pk_col ] );
+							$where[ $pk_col ] = $row[ $pk_col ];
 						}
-						migrate_lift_q( "UPDATE $table_escaped SET " . implode( ', ', $updates ) . ' WHERE ' . implode( ' AND ', $where ) );
+						migrate_lift_update_row( $table_name, $updates, $where );
 					}
 				}
 				$offset += $batch;
@@ -507,27 +505,23 @@ class Migrate_Lift_Database_Replacement_Engine {
 			}
 
 			// Insert or replace into mltmp_users
-			$cols = array();
-			$vals = array();
-			foreach ( $live_user as $k => $v ) {
-				$cols[] = migrate_lift_name( $k );
-				$vals[] = migrate_lift_e( $v );
-			}
-			migrate_lift_q( "REPLACE INTO " . migrate_lift_name( $tmp_users ) . " (" . implode( ',', $cols ) . ") VALUES (" . implode( ',', $vals ) . ")" );
+			migrate_lift_write_row( 'REPLACE', $tmp_users, $live_user );
 
 			// Copy admin usermeta
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Admin user preservation.
 			$live_meta = $wpdb->get_results( $wpdb->prepare( "SELECT meta_key, meta_value FROM {$wpdb->usermeta} WHERE user_id = %d", $current_user_id ), ARRAY_A );
 			if ( ! empty( $live_meta ) ) {
-				migrate_lift_q( "DELETE FROM " . migrate_lift_name( $tmp_usermeta ) . " WHERE user_id = " . (int) $current_user_id );
+				migrate_lift_q( 'DELETE FROM %i WHERE user_id = %d', array( $tmp_usermeta, (int) $current_user_id ) );
 				foreach ( $live_meta as $m ) {
-					migrate_lift_q( sprintf(
-						"INSERT INTO %s (user_id, meta_key, meta_value) VALUES (%d, %s, %s)",
-						migrate_lift_name( $tmp_usermeta ),
-						(int) $current_user_id,
-						migrate_lift_e( $m['meta_key'] ),
-						migrate_lift_e( $m['meta_value'] )
-					) );
+					migrate_lift_write_row(
+						'INSERT',
+						$tmp_usermeta,
+						array(
+							'user_id'    => (int) $current_user_id,
+							'meta_key'   => $m['meta_key'],
+							'meta_value' => $m['meta_value'],
+						)
+					);
 				}
 			}
 
@@ -577,7 +571,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 		// Clean up any stale mlold_ tables first
 		if ( function_exists( 'migrate_lift_tables' ) ) {
 			foreach ( migrate_lift_tables( $old_prefix ) as $stale ) {
-				migrate_lift_q( 'DROP TABLE IF EXISTS ' . migrate_lift_name( $stale ) );
+				migrate_lift_q( 'DROP TABLE IF EXISTS %i', array( $stale ) );
 			}
 		}
 
@@ -586,7 +580,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 		foreach ( $live_tables as $table ) {
 			if ( 0 !== strpos( $table, $tmp_prefix ) && 0 !== strpos( $table, $old_prefix ) ) {
 				$sub = substr( $table, strlen( $dest_prefix ) );
-				$renames[] = migrate_lift_name( $table ) . ' TO ' . migrate_lift_name( $old_prefix . $sub );
+				$renames[] = array( $table, $old_prefix . $sub );
 			}
 		}
 
@@ -595,7 +589,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 		foreach ( $staged_tables as $table ) {
 			$sub = substr( $table, strlen( $tmp_prefix ) );
 			$target_name = $dest_prefix . $sub;
-			$renames[] = migrate_lift_name( $table ) . ' TO ' . migrate_lift_name( $target_name );
+			$renames[] = array( $table, $target_name );
 			$swapped[] = $target_name;
 		}
 
@@ -607,12 +601,11 @@ class Migrate_Lift_Database_Replacement_Engine {
 		self::enable_maintenance_mode();
 
 		try {
-			$rename_query = 'RENAME TABLE ' . implode( ', ', $renames );
-			migrate_lift_q( $rename_query );
+			migrate_lift_rename_tables( $renames );
 
 			// Cutover successful! Drop mlold_* tables
 			foreach ( migrate_lift_tables( $old_prefix ) as $old_table ) {
-				migrate_lift_q( 'DROP TABLE IF EXISTS ' . migrate_lift_name( $old_table ) );
+				migrate_lift_q( 'DROP TABLE IF EXISTS %i', array( $old_table ) );
 			}
 
 			// Drop caches
@@ -632,10 +625,10 @@ class Migrate_Lift_Database_Replacement_Engine {
 				$rollback_renames = array();
 				foreach ( migrate_lift_tables( $old_prefix ) as $old_table ) {
 					$sub = substr( $old_table, strlen( $old_prefix ) );
-					$rollback_renames[] = migrate_lift_name( $old_table ) . ' TO ' . migrate_lift_name( $dest_prefix . $sub );
+					$rollback_renames[] = array( $old_table, $dest_prefix . $sub );
 				}
 				if ( ! empty( $rollback_renames ) ) {
-					migrate_lift_q( 'RENAME TABLE ' . implode( ', ', $rollback_renames ) );
+					migrate_lift_rename_tables( $rollback_renames );
 				}
 			} catch ( Throwable $rollback_e ) {
 				// Log critical error
@@ -652,14 +645,22 @@ class Migrate_Lift_Database_Replacement_Engine {
 	 * recovery point that protect this restore are still there after the swap.
 	 */
 	protected static function keep_plugin_state_in_staged_options() {
-		$options = migrate_lift_name( MIGRATE_LIFT_TMP_PREFIX . 'options' );
+		$options = MIGRATE_LIFT_TMP_PREFIX . 'options';
 
 		foreach ( array( 'migrate_lift_paired_sites', 'migrate_lift_pending_pairings', 'migrate_lift_recovery_point', 'migrate_lift_recovery_metadata', 'migrate_lift_backup_metadata' ) as $name ) {
-			migrate_lift_q( "DELETE FROM $options WHERE option_name = " . migrate_lift_e( $name ) );
+			migrate_lift_q( 'DELETE FROM %i WHERE option_name = %s', array( $options, $name ) );
 
 			$value = get_option( $name, null );
 			if ( null !== $value ) {
-				migrate_lift_q( "INSERT INTO $options (option_name, option_value, autoload) VALUES (" . migrate_lift_e( $name ) . ', ' . migrate_lift_e( maybe_serialize( $value ) ) . ", 'no')" );
+				migrate_lift_write_row(
+					'INSERT',
+					$options,
+					array(
+						'option_name'  => $name,
+						'option_value' => maybe_serialize( $value ),
+						'autoload'     => 'no',
+					)
+				);
 			}
 		}
 	}
@@ -669,7 +670,7 @@ class Migrate_Lift_Database_Replacement_Engine {
 	 */
 	public static function discard_staged_tables() {
 		foreach ( migrate_lift_tables( MIGRATE_LIFT_TMP_PREFIX ) as $table ) {
-			migrate_lift_q( 'DROP TABLE IF EXISTS ' . migrate_lift_name( $table ) );
+			migrate_lift_q( 'DROP TABLE IF EXISTS %i', array( $table ) );
 		}
 	}
 

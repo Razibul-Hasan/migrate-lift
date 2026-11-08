@@ -288,12 +288,7 @@ class Migrate_Lift_Activity_Logger {
 		$path = self::get_log_path();
 		$dir  = dirname( $path );
 		if ( ! is_dir( $dir ) ) {
-			if ( function_exists( 'wp_mkdir_p' ) ) {
-				wp_mkdir_p( $dir );
-			} else {
-				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir
-				@mkdir( $dir, 0777, true );
-			}
+			wp_mkdir_p( $dir );
 		}
 
 		$entries = self::read_entries();
