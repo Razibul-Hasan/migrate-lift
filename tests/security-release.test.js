@@ -24,7 +24,17 @@ test( 'Security Audit: Queries use prepare(), and only dump replay runs raw SQL'
 	assert.ok( ! /\bmysqli_/.test( code ), 'Database access must go through $wpdb' );
 
 	const raw = code.match( /\$wpdb->(?:query|get_results|get_row|get_var|get_col)\(\s*\$(?!wpdb->prepare)\w+/g ) || [];
-	assert.deepEqual( raw, [ '$wpdb->query( $statement' ], 'Only migrate_lift_run_dump_statement() may run unprepared SQL' );
+	assert.deepEqual(
+		raw.sort(),
+		[ '$wpdb->get_results( $query', '$wpdb->query( $query', '$wpdb->query( $statement' ],
+		'Only migrate_lift_q(), migrate_lift_rows() and migrate_lift_run_dump_statement() may pass a variable to $wpdb'
+	);
+
+	// In migrate_lift_q() and migrate_lift_rows(), $query must come straight from $wpdb->prepare().
+	const functionsPhp = fs.readFileSync( path.join( dir, 'functions.php' ), 'utf-8' );
+	const prepared = functionsPhp.match( /\$query\s*=\s*\$wpdb->prepare\(\s*\$sql,\s*\$args\s*\);/g ) || [];
+	assert.equal( prepared.length, 2, 'migrate_lift_q() and migrate_lift_rows() must prepare $query' );
+	assert.equal( ( functionsPhp.match( /\$query\s*=/g ) || [] ).length, 2, '$query must not be reassigned in functions.php' );
 
 	assert.ok(
 		! /migrate_lift_(?:q|rows|col)\([^;]*migrate_lift_(?:e|name)\(/.test( code ),

@@ -509,19 +509,11 @@ class Migrate_Lift_Database_Replacement_Engine {
 
 			// Copy admin usermeta
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Admin user preservation.
-			$live_meta = $wpdb->get_results( $wpdb->prepare( "SELECT meta_key, meta_value FROM {$wpdb->usermeta} WHERE user_id = %d", $current_user_id ), ARRAY_A );
+			$live_meta = $wpdb->get_results( $wpdb->prepare( "SELECT user_id, meta_key, meta_value FROM {$wpdb->usermeta} WHERE user_id = %d", $current_user_id ), ARRAY_A );
 			if ( ! empty( $live_meta ) ) {
 				migrate_lift_q( 'DELETE FROM %i WHERE user_id = %d', array( $tmp_usermeta, (int) $current_user_id ) );
 				foreach ( $live_meta as $m ) {
-					migrate_lift_write_row(
-						'INSERT',
-						$tmp_usermeta,
-						array(
-							'user_id'    => (int) $current_user_id,
-							'meta_key'   => $m['meta_key'],
-							'meta_value' => $m['meta_value'],
-						)
-					);
+					migrate_lift_write_row( 'INSERT', $tmp_usermeta, $m );
 				}
 			}
 

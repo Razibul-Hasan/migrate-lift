@@ -202,8 +202,9 @@ function migrate_lift_progress( $progress, $message, $extra = array() ) {
 function migrate_lift_q( $sql, $args = array() ) {
 	global $wpdb;
 	$suppress = $wpdb->suppress_errors( true );
-	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery -- Dynamic tables during dump and restore; the template only holds placeholders.
-	$result = $wpdb->query( $wpdb->prepare( $sql, $args ) );
+	$query    = $wpdb->prepare( $sql, $args ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- The template only holds placeholders.
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery, PluginCheck.Security.DirectDB.UnescapedDBParameter -- Dynamic tables during dump and restore; $query comes from $wpdb->prepare() above.
+	$result = $wpdb->query( $query );
 	$wpdb->suppress_errors( $suppress );
 	if ( false === $result ) {
 		throw new Exception( esc_html( 'Database error: ' . $wpdb->last_error . ' in: ' . substr( $sql, 0, 200 ) ) );
@@ -318,8 +319,9 @@ function migrate_lift_rename_tables( $renames ) {
 function migrate_lift_rows( $sql, $args = array(), $output = ARRAY_N ) {
 	global $wpdb;
 	$suppress = $wpdb->suppress_errors( true );
-	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery -- Dynamic tables during dump and restore; see migrate_lift_q().
-	$rows  = $wpdb->get_results( $wpdb->prepare( $sql, $args ), $output );
+	$query    = $wpdb->prepare( $sql, $args ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- The template only holds placeholders.
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.DirectDatabaseQuery, PluginCheck.Security.DirectDB.UnescapedDBParameter -- Dynamic tables during dump and restore; $query comes from $wpdb->prepare() above.
+	$rows  = $wpdb->get_results( $query, $output );
 	$error = $wpdb->last_error;
 	$wpdb->suppress_errors( $suppress );
 	$wpdb->flush();
