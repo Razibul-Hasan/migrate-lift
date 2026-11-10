@@ -205,3 +205,19 @@ test( 'PREVIEW_FIXTURE strictly conforms to DashboardSummary contract', () => {
 	assert.ok( PREVIEW_FIXTURE.recentActivity.length > 0 );
 } );
 
+
+test( 'Live job card: backup jobs are labelled as backups, not migrations', () => {
+	const fs = require( 'node:fs' );
+	const path = require( 'node:path' );
+
+	const job = { id: 'mljob_x', kind: 'backup', status: 'Running', progress: 40 };
+	assert.equal( normalizeSummary( { migrationJob: job } ).migrationJob.kind, 'backup', 'normalizeSummary keeps the job kind' );
+
+	const restApiPhp = fs.readFileSync( path.join( __dirname, '../includes/rest-api.php' ), 'utf-8' );
+	const block = restApiPhp.slice( restApiPhp.indexOf( '$migration_job = array(' ), restApiPhp.indexOf( "'destinationUrl'" ) );
+	assert.ok( block.includes( "'kind'" ), 'Summary endpoint sends the active job kind' );
+
+	const view = fs.readFileSync( path.join( __dirname, '../src/views/DashboardView.js' ), 'utf-8' );
+	assert.ok( view.includes( "'Backup in progress'" ), 'Dashboard has a backup-specific title' );
+	assert.ok( /'backup' === migrationJob\.kind \? 'backups' : 'migrate'/.test( view ), 'Backup jobs link to the Backups tab' );
+} );

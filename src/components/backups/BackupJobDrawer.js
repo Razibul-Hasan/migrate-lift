@@ -45,10 +45,17 @@ export default function BackupJobDrawer( {
 
 	const isCancellingRef = useRef( false );
 	const jobRunnerActiveRef = useRef( false );
+	// The drawer starts (or resumes) at most one job per opening. `activeJob` is
+	// refreshed by the parent's poll, so without this guard a finished backup
+	// (activeJob -> null) would immediately trigger a brand-new one.
+	const autoStartedRef = useRef( false );
 
 	// Start or attach to job when opened
 	useEffect( () => {
-		if ( ! isOpen ) return;
+		if ( ! isOpen ) {
+			autoStartedRef.current = false;
+			return;
+		}
 
 		if ( activeJob ) {
 			setCurrentJob( activeJob );
@@ -63,7 +70,12 @@ export default function BackupJobDrawer( {
 			}
 		}
 
-		if ( ! jobRunnerActiveRef.current && ( ! activeJob || activeJob.state !== 'completed' ) ) {
+		if ( autoStartedRef.current || jobRunnerActiveRef.current ) {
+			return;
+		}
+
+		if ( ! activeJob || activeJob.state !== 'completed' ) {
+			autoStartedRef.current = true;
 			startBackupExecution( activeJob && activeJob.state !== 'completed' ? activeJob.id : null );
 		}
 	}, [ isOpen, activeJob ] );
