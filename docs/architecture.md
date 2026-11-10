@@ -25,7 +25,7 @@ Migrate Lift is engineered around a decoupled architecture where a lightweight W
 ┌────────────────────────────────────────────────────────────────────────┐
 │                   Job & Time-Budget Engine                             │
 │   • Microtime deadline tracker (5-20s dynamic execution windows)       │
-│   • State persistence in secure PHP file-locks (*-state.php)           │
+│   • State persistence in private JSON files (*-state.json)             │
 └──────────────┬────────────────────┼─────────────────────┬──────────────┘
                │                    │                     │
                ▼                    ▼                     ▼
@@ -66,7 +66,7 @@ To execute successfully on shared hosting environments with aggressive PHP timeo
 1. At the start of every request, `migrate_lift_timer_start()` computes a deadline:
    $$\text{Deadline} = \text{microtime}() + \min(20, \lfloor\text{max\_execution\_time} / 2\rfloor)$$
 2. Operations loop while checking `migrate_lift_out_of_time()`.
-3. Before the timeout threshold is reached, intermediate byte positions and table cursors are persisted into `wp-content/migrate-lift-files/{job}-state.php`.
+3. Before the timeout threshold is reached, intermediate byte positions and table cursors are persisted into `wp-content/migrate-lift-files/private-{random}/{job}-state.json`.
 4. The client receives a progress payload and issues the subsequent iteration request with `step=continue`.
 
 ### 2.5 Database Staging & Safe Replacement

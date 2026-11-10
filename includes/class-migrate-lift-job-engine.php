@@ -178,13 +178,7 @@ class Migrate_Lift_Job_Engine {
 			return null;
 		}
 
-		$raw = (string) @file_get_contents( $path );
-		$newline_pos = strpos( $raw, "\n" );
-		if ( false === $newline_pos ) {
-			return null;
-		}
-
-		$data = json_decode( substr( $raw, $newline_pos + 1 ), true );
+		$data = json_decode( (string) @file_get_contents( $path ), true );
 		return is_array( $data ) ? $data : null;
 	}
 
@@ -208,19 +202,14 @@ class Migrate_Lift_Job_Engine {
 			return array( 'jobs' => array(), 'total' => 0 );
 		}
 
-		$files = glob( $dir . '/mljob_*.php' );
+		$files = glob( $dir . '/mljob_*.json' );
 		if ( ! $files ) {
 			return array( 'jobs' => array(), 'total' => 0 );
 		}
 
 		$jobs = array();
 		foreach ( $files as $file ) {
-			$raw = (string) @file_get_contents( $file );
-			$newline_pos = strpos( $raw, "\n" );
-			if ( false === $newline_pos ) {
-				continue;
-			}
-			$job = json_decode( substr( $raw, $newline_pos + 1 ), true );
+			$job = json_decode( (string) @file_get_contents( $file ), true );
 			if ( ! is_array( $job ) || empty( $job['id'] ) ) {
 				continue;
 			}
@@ -648,7 +637,7 @@ class Migrate_Lift_Job_Engine {
 		}
 
 		$path = self::get_job_file_path( $job['id'] );
-		$payload = "<?php exit; ?>\n" . wp_json_encode( $job );
+		$payload = wp_json_encode( $job );
 
 		$written = @file_put_contents( $path, $payload, LOCK_EX );
 		if ( false === $written ) {
@@ -664,7 +653,7 @@ class Migrate_Lift_Job_Engine {
 	 * @return string
 	 */
 	public static function get_jobs_dir() {
-		$dir = migrate_lift_dir( self::JOBS_DIR );
+		$dir = migrate_lift_private_dir( self::JOBS_DIR );
 
 		if ( ! is_dir( $dir ) ) {
 			wp_mkdir_p( $dir );
@@ -680,7 +669,7 @@ class Migrate_Lift_Job_Engine {
 	 * @return string
 	 */
 	public static function get_job_file_path( $job_id ) {
-		return self::get_jobs_dir() . '/' . sanitize_key( $job_id ) . '.php';
+		return self::get_jobs_dir() . '/' . sanitize_key( $job_id ) . '.json';
 	}
 }
 

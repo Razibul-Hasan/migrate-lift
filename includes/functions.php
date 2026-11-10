@@ -46,28 +46,61 @@ function migrate_lift_root_dir() {
 }
 
 /**
- * Returns the path of a working folder inside storage. The folder name ends in a random value kept
- * on disk, so on servers that ignore .htaccess its contents cannot be found by URL. It is kept on
- * disk rather than in the database because an import replaces the database part way through.
+ * Returns the random value that makes private storage paths unguessable.
+ *
+ * The value is not written into any file: it is the name of the "private-<key>" folder inside
+ * storage, found again by listing that folder. Directory listing is blocked by index.php, so on
+ * servers that ignore .htaccess the private files still cannot be found by URL. It is kept on disk
+ * rather than in the database because an import replaces the database part way through.
+ *
+ * @return string
+ */
+function migrate_lift_storage_key() {
+	static $key = null;
+	if ( null !== $key ) {
+		return $key;
+	}
+	$found_dirs = glob( migrate_lift_dir( 'private-*' ), GLOB_ONLYDIR );
+	foreach ( $found_dirs ? $found_dirs : array() as $found ) {
+		if ( preg_match( '/^private-([A-Za-z0-9]{32})$/', basename( $found ), $m ) ) {
+			$key = $m[1];
+			return $key;
+		}
+	}
+	$key = wp_generate_password( 32, false, false );
+	migrate_lift_private_dir();
+	return $key;
+}
+
+/**
+ * Returns the private data folder (or a path inside it), creating it on first use. Job states,
+ * job records and the activity log are kept here as plain JSON.
+ *
+ * @param string $sub Optional relative path.
+ * @return string
+ */
+function migrate_lift_private_dir( $sub = '' ) {
+	$dir = migrate_lift_dir( 'private-' . migrate_lift_storage_key() );
+	if ( ! is_dir( $dir ) ) {
+		wp_mkdir_p( $dir );
+	}
+	if ( ! file_exists( $dir . '/index.php' ) ) {
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Blocks directory listing.
+		file_put_contents( $dir . '/index.php', "<?php\n// Silence is golden.\n" );
+	}
+	return '' === $sub ? $dir : $dir . '/' . $sub;
+}
+
+/**
+ * Returns the path of a working folder inside storage. The folder name ends in the storage key,
+ * so on servers that ignore .htaccess its contents cannot be found by URL.
  *
  * @param string $name Base name of the folder.
  * @param string $sub  Optional relative path inside the folder.
  * @return string
  */
 function migrate_lift_tmp( $name, $sub = '' ) {
-	static $key = null;
-	if ( null === $key ) {
-		$file = migrate_lift_dir( 'storage-key.php' );
-		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_get_contents
-		$raw = is_file( $file ) ? (string) file_get_contents( $file ) : '';
-		$key = trim( (string) substr( $raw, (int) strpos( $raw, "\n" ) + 1 ) );
-		if ( ! preg_match( '/^[A-Za-z0-9]{32}$/', $key ) ) {
-			$key = wp_generate_password( 32, false, false );
-			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-			file_put_contents( $file, "<?php exit; ?>\n" . $key, LOCK_EX );
-		}
-	}
-	return migrate_lift_dir( $name . '-' . $key . ( '' === $sub ? '' : '/' . $sub ) );
+	return migrate_lift_dir( $name . '-' . migrate_lift_storage_key() . ( '' === $sub ? '' : '/' . $sub ) );
 }
 
 /**
@@ -95,19 +128,18 @@ if ( ! function_exists( 'migrate_lift_dir' ) ) {
 }
 
 /**
- * Reads a job state. States are stored as PHP files that exit at once, so a browser never sees them.
+ * Reads a job state. States are plain JSON files in the private storage folder.
  *
  * @param string $job "export" or "import".
  * @return array|null
  */
 function migrate_lift_state_get( $job ) {
-	$file = migrate_lift_dir( $job . '-state.php' );
+	$file = migrate_lift_private_dir( $job . '-state.json' );
 	if ( ! file_exists( $file ) ) {
 		return null;
 	}
 	// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_get_contents
-	$raw  = (string) file_get_contents( $file );
-	$data = json_decode( substr( $raw, strpos( $raw, "\n" ) + 1 ), true );
+	$data = json_decode( (string) file_get_contents( $file ), true );
 
 	return is_array( $data ) ? $data : null;
 }
@@ -120,7 +152,7 @@ function migrate_lift_state_get( $job ) {
  */
 function migrate_lift_state_put( $job, $state ) {
 	// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-	$ok = file_put_contents( migrate_lift_dir( $job . '-state.php' ), "<?php exit; ?>\n" . wp_json_encode( $state ), LOCK_EX );
+	$ok = file_put_contents( migrate_lift_private_dir( $job . '-state.json' ), wp_json_encode( $state ), LOCK_EX );
 	if ( false === $ok ) {
 		throw new Exception( esc_html__( 'Could not write to wp-content/migrate-lift-files. Check folder permissions.', 'migrate-lift' ) );
 	}
@@ -132,7 +164,7 @@ function migrate_lift_state_put( $job, $state ) {
  * @param string $job Job name.
  */
 function migrate_lift_state_delete( $job ) {
-	$file = migrate_lift_dir( $job . '-state.php' );
+	$file = migrate_lift_private_dir( $job . '-state.json' );
 	if ( file_exists( $file ) ) {
 		wp_delete_file( $file );
 	}

@@ -23,7 +23,7 @@ class Migrate_Lift_Activity_Logger {
 	/**
 	 * Log file name inside migrate-lift-files storage directory.
 	 */
-	const LOG_FILE = 'activity-log.php';
+	const LOG_FILE = 'activity-log.json';
 
 	/**
 	 * Supported log levels.
@@ -241,8 +241,7 @@ class Migrate_Lift_Activity_Logger {
 	public static function clear() {
 		$path = self::get_log_path();
 		if ( file_exists( $path ) ) {
-			$header = "<?php exit; ?>\n";
-			return false !== file_put_contents( $path, $header . '[]', LOCK_EX );
+			return false !== file_put_contents( $path, '[]', LOCK_EX );
 		}
 		return true;
 	}
@@ -253,7 +252,7 @@ class Migrate_Lift_Activity_Logger {
 	 * @return string
 	 */
 	protected static function get_log_path() {
-		return migrate_lift_dir( self::LOG_FILE );
+		return migrate_lift_private_dir( self::LOG_FILE );
 	}
 
 	/**
@@ -267,14 +266,7 @@ class Migrate_Lift_Activity_Logger {
 			return array();
 		}
 
-		$raw = (string) @file_get_contents( $path );
-		$newline_pos = strpos( $raw, "\n" );
-		if ( false === $newline_pos ) {
-			return array();
-		}
-
-		$json = substr( $raw, $newline_pos + 1 );
-		$data = json_decode( $json, true );
+		$data = json_decode( (string) @file_get_contents( $path ), true );
 
 		return is_array( $data ) ? $data : array();
 	}
@@ -301,7 +293,7 @@ class Migrate_Lift_Activity_Logger {
 			$entries = array_slice( $entries, 0, self::MAX_ENTRIES );
 		}
 
-		$payload = "<?php exit; ?>\n" . wp_json_encode( $entries );
+		$payload = wp_json_encode( $entries );
 		@file_put_contents( $path, $payload, LOCK_EX );
 	}
 }

@@ -772,7 +772,7 @@ function migrate_lift_clean_step() {
 			return migrate_lift_progress( 50, 'Deleting temporary files…' );
 		}
 	}
-	foreach ( array_merge( glob( migrate_lift_dir( '*.part' ) ), glob( migrate_lift_dir( '*-state.php' ) ) ) as $file ) {
+	foreach ( array_merge( glob( migrate_lift_dir( '*.part' ) ), glob( migrate_lift_private_dir( '*-state.json' ) ) ) as $file ) {
 		wp_delete_file( $file );
 	}
 	foreach ( array_merge( migrate_lift_tables( MIGRATE_LIFT_TMP_PREFIX ), migrate_lift_tables( MIGRATE_LIFT_OLD_PREFIX ) ) as $table ) {
