@@ -4,7 +4,7 @@
  * Plugin Name:       MigrateLift – Migration, Backup & Restore
  * Plugin URI:        https://bestwebexpert.com/migrate-lift/
  * Description:       Lightweight site migration, backup and restore for WordPress. Export database and wp-content into one .tgz archive; import on another site with automatic URL replacement.
- * Version:           1.0.0
+ * Version:           1.0.1
  * Requires at least: 6.6
  * Requires PHP:      7.4
  * Author:            bestwpexpert
@@ -20,7 +20,7 @@
 defined('ABSPATH') || exit;
 
 // PHP Constants Prefix: MIGRATE_LIFT_
-define('MIGRATE_LIFT_VERSION', '1.0.0');
+define('MIGRATE_LIFT_VERSION', '1.0.1');
 define('MIGRATE_LIFT_FILE', __FILE__);
 define('MIGRATE_LIFT_PATH', plugin_dir_path(__FILE__));
 define('MIGRATE_LIFT_URL', plugin_dir_url(__FILE__));

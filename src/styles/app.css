@@ -187,88 +187,63 @@
 	border-radius: var(--ml-radius-full);
 }
 
-/* Tabs */
-.ml-tabs {
-	overflow-x: auto;
-	scrollbar-width: none;
-	-webkit-overflow-scrolling: touch;
+/* Tabs and the CTA are @wordpress/components; only the layout row is ours. */
+.ml-header-bottom {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
 }
 
-.ml-tabs::-webkit-scrollbar {
+.ml-header-bottom .ml-tabs {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.ml-header-bottom .ml-tabs .components-tab-panel__tabs {
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+
+.ml-header-bottom .ml-tabs .components-tab-panel__tabs-item {
+	flex-shrink: 0;
+	gap: 6px;
+}
+
+.ml-header-bottom .ml-tabs .components-tab-panel__tab-content {
 	display: none;
 }
 
-.ml-tabs-list {
-	display: flex;
-	gap: 4px;
-	list-style: none;
-	margin: 0;
-	padding: 0;
-}
-
-.ml-tabs-list li {
-	margin: 0;
+/* Outlined dark pill: uppercase, letter-spaced label with a trailing arrow. */
+.ml-header-bottom .components-button.ml-expert-chip {
 	flex-shrink: 0;
-}
-
-.ml-tab {
-	position: relative;
-	display: inline-flex;
-	align-items: center;
+	height: auto;
 	gap: 6px;
-	height: 44px;
-	padding: 0 12px;
-	border: none;
+	padding: 4px 10px;
+	border: 1px solid var(--ml-ink);
+	border-radius: var(--ml-radius-full);
 	background: transparent;
-	font-family: inherit;
-	font-size: 13px;
-	font-weight: 500;
-	color: var(--ml-muted);
+	box-shadow: none;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	line-height: 1.2;
+	color: var(--ml-ink);
 	white-space: nowrap;
-	cursor: pointer;
-	transition: color 0.12s ease;
+	transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-/* Hover pill sits inside the tab so the underline stays crisp at the bottom edge. */
-.ml-tab::before {
-	content: "";
-	position: absolute;
-	inset: 6px 2px;
-	border-radius: 7px;
-	background: transparent;
-	transition: background-color 0.12s ease;
-	z-index: -1;
+.ml-header-bottom .components-button.ml-expert-chip:hover,
+.ml-header-bottom .components-button.ml-expert-chip:focus {
+	background: var(--wp-admin-theme-color-darker-10);
+	color: #fff;
+	box-shadow: none;
 }
 
-.ml-tab:hover {
-	color: var(--ml-ink);
-}
-
-.ml-tab:hover::before {
-	background: rgba(17, 19, 24, 0.045);
-}
-
-.ml-tab.is-active {
-	color: var(--ml-ink);
-}
-
-.ml-tab.is-active::after {
-	content: "";
-	position: absolute;
-	left: 12px;
-	right: 12px;
-	bottom: -1px;
-	height: 2px;
-	border-radius: 2px;
-	background: var(--ml-ink);
-}
-
-.ml-tab:focus-visible {
-	outline-offset: -4px;
-}
-
-.ml-tabs-list {
-	isolation: isolate; /* keeps the z-index:-1 hover pill above the header background */
+.ml-expert-chip-arrow {
+	font-size: 11px;
+	letter-spacing: 0;
 }
 
 .ml-tab-count {
@@ -1693,11 +1668,6 @@
 	.ml-content-container {
 		padding-left: 16px;
 		padding-right: 16px;
-	}
-	.ml-tabs {
-		margin-left: -16px;
-		margin-right: -16px;
-		padding: 0 16px;
 	}
 	.ml-content-container {
 		padding-top: 20px;

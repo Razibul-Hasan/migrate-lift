@@ -338,15 +338,7 @@ export default function BackupJobDrawer( {
 						/* In Progress View */
 						<div className="ml-job-progress-section">
 							<div className="ml-job-bar-box">
-								<div style={ { display: 'flex', justifyContent: 'space-between', marginBottom: 8 } }>
-									<span style={ { fontSize: 13, fontWeight: 700, color: 'var(--ml-ink)' } }>
-										{ message || __( 'Processing…', 'migrate-lift' ) }
-									</span>
-									<span style={ { fontSize: 13, fontWeight: 800, color: 'var(--ml-teal)' } }>
-										{ Math.round( progress ) }%
-									</span>
-								</div>
-								<ProgressBar progress={ progress } />
+								<ProgressBar value={ progress } label={ message || __( 'Processing…', 'migrate-lift' ) } />
 							</div>
 
 							{ /* Stepper List */ }

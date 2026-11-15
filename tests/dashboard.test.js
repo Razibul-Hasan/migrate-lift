@@ -221,3 +221,15 @@ test( 'Live job card: backup jobs are labelled as backups, not migrations', () =
 	assert.ok( view.includes( "'Backup in progress'" ), 'Dashboard has a backup-specific title' );
 	assert.ok( /'backup' === migrationJob\.kind \? 'backups' : 'migrate'/.test( view ), 'Backup jobs link to the Backups tab' );
 } );
+
+test( 'ProgressBar callers pass the `value` prop it reads (a `progress` prop renders an empty 0% bar)', () => {
+	const fs = require( 'node:fs' );
+	const path = require( 'node:path' );
+	const walk = ( dir ) => fs.readdirSync( dir, { withFileTypes: true } ).flatMap( ( e ) =>
+		e.isDirectory() ? walk( path.join( dir, e.name ) ) : e.name.endsWith( '.js' ) ? [ path.join( dir, e.name ) ] : []
+	);
+	const offenders = walk( path.join( __dirname, '../src' ) ).filter( ( f ) =>
+		/<ProgressBar\b[^>]*\bprogress=/.test( fs.readFileSync( f, 'utf-8' ) )
+	);
+	assert.deepEqual( offenders.map( ( f ) => path.basename( f ) ), [] );
+} );

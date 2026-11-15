@@ -120,7 +120,8 @@ function migrate_lift_admin_assets( $hook ) {
 		'archives'      => migrate_lift_archives(),
 		'isMultisite'   => is_multisite(),
 		'pluginVersion' => MIGRATE_LIFT_VERSION,
-		'logoUrl'       => esc_url_raw( $url . 'assets/images/logo.png' ),
+		// The file's mtime busts the browser cache when the logo is replaced.
+		'logoUrl'       => esc_url_raw( add_query_arg( 'ver', (string) filemtime( $dir . 'assets/images/logo.png' ), $url . 'assets/images/logo.png' ) ),
 	);
 
 	wp_localize_script( 'migrate-lift-admin', 'migrateLift', $data );

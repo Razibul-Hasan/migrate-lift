@@ -1,6 +1,6 @@
 {
   "name": "migrate-lift",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Migrate Lift – WordPress Migration, Backup & Restore",
   "files": [
     "assets/",

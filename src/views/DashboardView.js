@@ -410,7 +410,7 @@ export default function DashboardView( {
 							}
 						>
 							<ProgressBar
-								progress={ migrationJob.progress || 0 }
+								value={ migrationJob.progress || 0 }
 								label={
 									migrationJob.currentStep ||
 									( 'backup' === migrationJob.kind
