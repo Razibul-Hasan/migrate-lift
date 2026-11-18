@@ -41,7 +41,7 @@ https://www.youtube.com/watch?v=_j4BCOmvWJE
 = How to Migrate a WordPress Site =
 
 1. Install and activate MigrateLift on both sites.
-2. Open **Tools > MigrateLift**.
+2. Open **MigrateLift** in the admin menu.
 3. Choose **Export** to download an archive, or **Migrate** for a direct transfer.
 4. On the destination site, use **Import** and upload the archive.
 5. Review the checks, confirm the restore, then test your pages, links, and media.
@@ -67,7 +67,7 @@ The admin screens are built with `@wordpress/scripts`. The source is in the `src
 
 1. Upload the `migrate-lift` folder to `/wp-content/plugins/`, or install it from **Plugins > Add New**.
 2. Activate **MigrateLift**.
-3. Open **Tools > MigrateLift** and choose **Export**, **Import**, or **Migrate**.
+3. Open **MigrateLift** in the admin menu and choose **Export**, **Import**, or **Migrate**.
 4. For automatic backups, set the schedule and retention in the MigrateLift settings.
 
 == Frequently Asked Questions ==
@@ -124,6 +124,7 @@ Deactivating keeps your backups and settings. Deleting the plugin removes its da
 
 = 1.0.2 =
 * MigrateLift now appears as its own top-level menu in the WordPress admin.
+* Removed the forced menu position so WordPress places the menu without clashing with core items.
 
 = 1.0.1 =
 * Updated the dashboard icon and header navigation.

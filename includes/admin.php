@@ -8,7 +8,7 @@
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Registers MigrateLift admin menu under Tools.
+ * Registers the MigrateLift top-level admin menu (no forced position, so WordPress places it at the bottom).
  */
 function migrate_lift_admin_menu() {
 	add_menu_page(
@@ -17,8 +17,7 @@ function migrate_lift_admin_menu() {
 		'manage_options',
 		'migrate-lift',
 		'migrate_lift_render_page',
-		'dashicons-migrate',
-		80
+		'dashicons-migrate'
 	);
 }
 add_action( 'admin_menu', 'migrate_lift_admin_menu' );
