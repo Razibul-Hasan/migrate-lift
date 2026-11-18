@@ -1,4 +1,4 @@
-=== MigrateLift – WordPress Migration, Backup & Restore ===
+=== MigrateLift – Migration, Backup & Restore ===
 Contributors: bestwpexpert
 Tags: migration, backup, restore, migrate, clone
 Requires at least: 6.6
