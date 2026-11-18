@@ -4,7 +4,7 @@ Tags: migration, backup, restore, migrate, clone
 Requires at least: 6.6
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.0.1
+Stable tag: 1.0.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -121,6 +121,9 @@ Deactivating keeps your backups and settings. Deleting the plugin removes its da
 5. Scheduled backup and retention settings.
 
 == Changelog ==
+
+= 1.0.2 =
+* MigrateLift now appears as its own top-level menu in the WordPress admin.
 
 = 1.0.1 =
 * Updated the dashboard icon and header navigation.

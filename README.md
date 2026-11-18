@@ -8,7 +8,7 @@
 
 Move a site to a new host or domain, back it up, restore it, or clone it to staging, all from your WordPress dashboard.
 
-![Version](https://img.shields.io/badge/version-1.0.1-1a6fe8)
+![Version](https://img.shields.io/badge/version-1.0.2-1a6fe8)
 ![WordPress](https://img.shields.io/badge/WordPress-6.6%2B-21759b)
 ![PHP](https://img.shields.io/badge/PHP-7.4%2B-777bb4)
 ![License](https://img.shields.io/badge/license-GPLv2%2B-green)
