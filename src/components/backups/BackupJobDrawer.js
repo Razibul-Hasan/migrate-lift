@@ -45,10 +45,17 @@ export default function BackupJobDrawer( {
 
 	const isCancellingRef = useRef( false );
 	const jobRunnerActiveRef = useRef( false );
+	// The drawer starts (or resumes) at most one job per opening. `activeJob` is
+	// refreshed by the parent's poll, so without this guard a finished backup
+	// (activeJob -> null) would immediately trigger a brand-new one.
+	const autoStartedRef = useRef( false );
 
 	// Start or attach to job when opened
 	useEffect( () => {
-		if ( ! isOpen ) return;
+		if ( ! isOpen ) {
+			autoStartedRef.current = false;
+			return;
+		}
 
 		if ( activeJob ) {
 			setCurrentJob( activeJob );
@@ -63,7 +70,12 @@ export default function BackupJobDrawer( {
 			}
 		}
 
-		if ( ! jobRunnerActiveRef.current && ( ! activeJob || activeJob.state !== 'completed' ) ) {
+		if ( autoStartedRef.current || jobRunnerActiveRef.current ) {
+			return;
+		}
+
+		if ( ! activeJob || activeJob.state !== 'completed' ) {
+			autoStartedRef.current = true;
 			startBackupExecution( activeJob && activeJob.state !== 'completed' ? activeJob.id : null );
 		}
 	}, [ isOpen, activeJob ] );
@@ -326,15 +338,7 @@ export default function BackupJobDrawer( {
 						/* In Progress View */
 						<div className="ml-job-progress-section">
 							<div className="ml-job-bar-box">
-								<div style={ { display: 'flex', justifyContent: 'space-between', marginBottom: 8 } }>
-									<span style={ { fontSize: 13, fontWeight: 700, color: 'var(--ml-ink)' } }>
-										{ message || __( 'Processing…', 'migrate-lift' ) }
-									</span>
-									<span style={ { fontSize: 13, fontWeight: 800, color: 'var(--ml-teal)' } }>
-										{ Math.round( progress ) }%
-									</span>
-								</div>
-								<ProgressBar progress={ progress } />
+								<ProgressBar value={ progress } label={ message || __( 'Processing…', 'migrate-lift' ) } />
 							</div>
 
 							{ /* Stepper List */ }

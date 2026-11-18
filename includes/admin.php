@@ -11,13 +11,14 @@ defined( 'ABSPATH' ) || exit;
  * Registers MigrateLift admin menu under Tools.
  */
 function migrate_lift_admin_menu() {
-	add_submenu_page(
-		'tools.php',
+	add_menu_page(
 		__( 'MigrateLift', 'migrate-lift' ),
 		__( 'MigrateLift', 'migrate-lift' ),
 		'manage_options',
 		'migrate-lift',
-		'migrate_lift_render_page'
+		'migrate_lift_render_page',
+		'dashicons-migrate',
+		80
 	);
 }
 add_action( 'admin_menu', 'migrate_lift_admin_menu' );
@@ -29,7 +30,7 @@ add_action( 'admin_menu', 'migrate_lift_admin_menu' );
  * @return array
  */
 function migrate_lift_action_links( $links ) {
-	array_unshift( $links, '<a href="' . esc_url( admin_url( 'tools.php?page=migrate-lift' ) ) . '">' . esc_html__( 'Migrate', 'migrate-lift' ) . '</a>' );
+	array_unshift( $links, '<a href="' . esc_url( admin_url( 'admin.php?page=migrate-lift' ) ) . '">' . esc_html__( 'Migrate', 'migrate-lift' ) . '</a>' );
 	return $links;
 }
 add_filter( 'plugin_action_links_' . plugin_basename( MIGRATE_LIFT_FILE ), 'migrate_lift_action_links' );
@@ -60,7 +61,7 @@ function migrate_lift_activation_redirect() {
 		return;
 	}
 
-	wp_safe_redirect( admin_url( 'tools.php?page=migrate-lift' ) );
+	wp_safe_redirect( admin_url( 'admin.php?page=migrate-lift' ) );
 	exit;
 }
 add_action( 'admin_init', 'migrate_lift_activation_redirect' );
@@ -71,7 +72,7 @@ add_action( 'admin_init', 'migrate_lift_activation_redirect' );
  * @param string $hook Screen hook.
  */
 function migrate_lift_admin_assets( $hook ) {
-	if ( 'tools_page_migrate-lift' !== $hook ) {
+	if ( 'toplevel_page_migrate-lift' !== $hook ) {
 		return;
 	}
 	$url        = plugin_dir_url( MIGRATE_LIFT_FILE );
@@ -120,7 +121,8 @@ function migrate_lift_admin_assets( $hook ) {
 		'archives'      => migrate_lift_archives(),
 		'isMultisite'   => is_multisite(),
 		'pluginVersion' => MIGRATE_LIFT_VERSION,
-		'logoUrl'       => esc_url_raw( $url . 'assets/images/logo.png' ),
+		// The file's mtime busts the browser cache when the logo is replaced.
+		'logoUrl'       => esc_url_raw( add_query_arg( 'ver', (string) filemtime( $dir . 'assets/images/logo.png' ), $url . 'assets/images/logo.png' ) ),
 	);
 
 	wp_localize_script( 'migrate-lift-admin', 'migrateLift', $data );

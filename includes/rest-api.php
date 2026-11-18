@@ -1184,6 +1184,7 @@ function migrate_lift_rest_dashboard_summary( $request ) {
 			$j = $active_jobs['jobs'][0];
 			$migration_job = array(
 				'id'             => $j['id'],
+				'kind'           => $j['kind'] ?? '',
 				'status'         => ucfirst( $j['state'] ),
 				'progress'       => $j['percentage'],
 				'currentStep'    => ! empty( $j['diagnostic_detail'] ) ? $j['diagnostic_detail'] : $j['phase'],
@@ -1508,6 +1509,11 @@ function migrate_lift_rest_create_job( $request ) {
 				);
 			}
 		}
+
+		$cooldown_error = migrate_lift_backup_cooldown_error();
+		if ( $cooldown_error ) {
+			return $cooldown_error;
+		}
 	}
 
 	$job = Migrate_Lift_Job_Engine::create_job( $kind, $params, $idempotency_key );
@@ -1727,6 +1733,11 @@ function migrate_lift_rest_start_backup( $request ) {
 					)
 				);
 			}
+		}
+
+		$cooldown_error = migrate_lift_backup_cooldown_error();
+		if ( $cooldown_error ) {
+			return $cooldown_error;
 		}
 	}
 
@@ -2487,6 +2498,48 @@ function migrate_lift_rest_pair_remote_checkpoint( $request ) {
  */
 function migrate_lift_sanitize_list( $values ) {
 	return array_values( array_map( 'sanitize_text_field', array_filter( (array) $values, 'is_string' ) ) );
+}
+
+/**
+ * Refuses a manual backup request that arrives right after another backup finished.
+ *
+ * A safety net against a client that keeps re-requesting backups (for example a UI
+ * effect stuck in a loop), which would otherwise fill the disk with archives.
+ * Scheduled backups and restore checkpoints create jobs directly and are not affected.
+ *
+ * @return WP_Error|null Error when inside the cooldown window, null otherwise.
+ */
+function migrate_lift_backup_cooldown_error() {
+	if ( ! class_exists( 'Migrate_Lift_Job_Engine' ) ) {
+		return null;
+	}
+
+	$cooldown = (int) apply_filters( 'migrate_lift_backup_cooldown_seconds', 30 );
+	if ( $cooldown <= 0 ) {
+		return null;
+	}
+
+	$recent = Migrate_Lift_Job_Engine::list_jobs(
+		array(
+			'kind'  => 'backup',
+			'state' => 'completed',
+			'limit' => 5,
+		)
+	);
+	foreach ( $recent['jobs'] ?? array() as $j ) {
+		$completed_at = ! empty( $j['completed_at'] ) ? (int) $j['completed_at'] : 0;
+		$elapsed      = time() - $completed_at;
+		if ( $completed_at && $elapsed < $cooldown ) {
+			return new WP_Error(
+				'backup_cooldown',
+				/* translators: %d: Seconds to wait. */
+				sprintf( __( 'A backup just finished. Please wait %d seconds before starting another one.', 'migrate-lift' ), $cooldown - $elapsed ),
+				array( 'status' => 429 )
+			);
+		}
+	}
+
+	return null;
 }
 
 /**

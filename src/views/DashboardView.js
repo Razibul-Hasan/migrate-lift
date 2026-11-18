@@ -397,22 +397,31 @@ export default function DashboardView( {
 				</div>
 
 				<div className="ml-dash-secondary-col">
-					{ /* Live migration (only while one is running) */ }
+					{ /* Live job (only while one is running); `migrationJob` holds any active job kind */ }
 					{ migrationJob && (
 						<SectionCard
-							title={ __( 'Migration in progress', 'migrate-lift' ) }
+							title={
+								'backup' === migrationJob.kind
+									? __( 'Backup in progress', 'migrate-lift' )
+									: __( 'Migration in progress', 'migrate-lift' )
+							}
 							headerActions={
 								<StatusPill status="info" label={ migrationJob.status || __( 'Running', 'migrate-lift' ) } />
 							}
 						>
 							<ProgressBar
-								progress={ migrationJob.progress || 0 }
-								label={ migrationJob.currentStep || __( 'Transferring…', 'migrate-lift' ) }
+								value={ migrationJob.progress || 0 }
+								label={
+									migrationJob.currentStep ||
+									( 'backup' === migrationJob.kind
+										? __( 'Backing up…', 'migrate-lift' )
+										: __( 'Transferring…', 'migrate-lift' ) )
+								}
 							/>
 							<button
 								type="button"
 								className="ml-link-btn"
-								onClick={ () => onNavigate( 'migrate' ) }
+								onClick={ () => onNavigate( 'backup' === migrationJob.kind ? 'backups' : 'migrate' ) }
 							>
 								{ __( 'Open monitor', 'migrate-lift' ) }
 								<IconArrowRight />

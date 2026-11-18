@@ -969,13 +969,10 @@ export default function MigrationWizard( { onComplete } ) {
 						) : (
 							<div>
 								<div style={ { marginBottom: '16px' } }>
-									<div style={ { display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '13px' } }>
-										<span style={ { fontWeight: 600 } }>
-											{ transferState?.message || __( 'Streaming bounded 2 MiB chunks over authenticated HTTPS…', 'migrate-lift' ) }
-										</span>
-										<span>{ transferState?.progress || ( transferState?.state === 'completed' ? 100 : 45 ) }%</span>
-									</div>
-									<ProgressBar progress={ transferState?.state === 'completed' ? 100 : ( transferState?.progress || 45 ) } />
+									<ProgressBar
+										value={ transferState?.state === 'completed' ? 100 : ( transferState?.progress || 45 ) }
+										label={ transferState?.message || __( 'Streaming bounded 2 MiB chunks over authenticated HTTPS…', 'migrate-lift' ) }
+									/>
 								</div>
 
 								<div

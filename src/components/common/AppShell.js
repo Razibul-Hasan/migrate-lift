@@ -4,9 +4,13 @@
  * Horizontal navigation avoids stacking a second sidebar next to the WordPress admin menu.
  */
 import { __ } from '@wordpress/i18n';
+import { Button, TabPanel } from '@wordpress/components';
 import { IconMigrate } from './Icons';
 
 const cfg = window.migrateLift || {};
+
+const EXPERT_URL =
+	'https://bestwebexpert.com/?utm_source=migrate-lift&utm_medium=plugin&utm_campaign=dashboard&utm_content=hire-an-expert';
 
 function getSiteHost() {
 	try {
@@ -37,6 +41,20 @@ export default function AppShell( {
 		{ id: 'activity', label: __( 'Activity', 'migrate-lift' ) },
 		{ id: 'settings', label: __( 'Settings', 'migrate-lift' ) },
 	];
+
+	const expertButton = (
+		<Button
+			className="ml-expert-chip"
+			href={ EXPERT_URL }
+			target="_blank"
+			rel="noopener noreferrer"
+		>
+			{ __( 'Hire an Expert', 'migrate-lift' ) }
+			<span className="ml-expert-chip-arrow" aria-hidden="true">
+				↗
+			</span>
+		</Button>
+	);
 
 	const handleNavClick = ( routeId ) => {
 		if ( typeof onRouteChange === 'function' ) {
@@ -79,31 +97,29 @@ export default function AppShell( {
 						) }
 					</div>
 
-					<nav className="ml-tabs" aria-label={ __( 'MigrateLift Navigation', 'migrate-lift' ) }>
-						<ul className="ml-tabs-list">
-							{ navItems.map( ( item ) => {
-								const isActive = activeRoute === item.id;
-								return (
-									<li key={ item.id }>
-										<button
-											type="button"
-											className={ `ml-tab ${ isActive ? 'is-active' : '' }` }
-											onClick={ () => handleNavClick( item.id ) }
-											aria-current={ isActive ? 'page' : undefined }
-										>
-											{ item.label }
-											{ item.count !== undefined && (
-												<span className="ml-tab-count">{ item.count }</span>
-											) }
-											{ item.badge && (
-												<span className="ml-nav-badge-soon">{ item.badge }</span>
-											) }
-										</button>
-									</li>
-								);
-							} ) }
-						</ul>
-					</nav>
+					<div className="ml-header-bottom">
+						{ /* TabPanel is used only for the tab strip; page content is rendered by the router below. */ }
+						<TabPanel
+							key={ activeRoute }
+							className="ml-tabs"
+							initialTabName={ activeRoute }
+							onSelect={ handleNavClick }
+							tabs={ navItems.map( ( item ) => ( {
+								name: item.id,
+								title: (
+									<>
+										{ item.label }
+										{ item.count !== undefined && (
+											<span className="ml-tab-count">{ item.count }</span>
+										) }
+									</>
+								),
+							} ) ) }
+						>
+							{ () => null }
+						</TabPanel>
+						{ expertButton }
+					</div>
 				</div>
 			</header>
 

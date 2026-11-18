@@ -1,124 +1,135 @@
-=== MigrateLift – Migration, Backup & Restore ===
+=== MigrateLift – WordPress Migration, Backup & Restore ===
 Contributors: bestwpexpert
-Tags: migration, backup, restore, export, import
+Tags: migration, backup, restore, migrate, clone
 Requires at least: 6.6
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.0.0
+Stable tag: 1.0.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Migrate WordPress sites, back up your database and files, and restore or import site archives with guided migration and scheduled backups.
+Migrate a WordPress site to a new host or domain. Back up, restore, clone, and schedule backups with one-click export and import.
 
 == Description ==
 
-**MigrateLift** is a WordPress migration, backup, and restore plugin for moving a website between hosts or domains, creating site backups, and restoring saved data. Export your WordPress database and wp-content files into one archive, import a backup on another WordPress installation, or transfer a site directly over HTTPS.
+**Moving your WordPress site shouldn't be stressful.** **MigrateLift** is a WordPress migration, backup, and restore plugin that guides you step by step. Move to a new host or domain, back up your database and wp-content files, restore from an archive, or clone a site to staging, all from your dashboard.
 
-Whether you need to migrate a WordPress website, back up important site data, restore a previous backup, or clone a site for staging, MigrateLift provides a guided workflow from your WordPress dashboard.
+**[Documentation](https://bestwebexpert.com/migrate-lift/)** | **[Video Tutorial](https://www.youtube.com/watch?v=_j4BCOmvWJE)** | **[Need Help? Contact Best Web Expert](https://bestwebexpert.com/)**
 
-= WordPress Migration, Backup, and Restore Features =
+**Why people choose MigrateLift**
 
-* **Website Migration:** Move a WordPress site's database and wp-content files to a new host or domain using an export/import archive or a direct site-to-site transfer.
-* **Backup and Export:** Export the WordPress database and wp-content directory together as one compressed .tgz or .zip archive.
-* **Import and Restore:** Upload a previously exported site archive, review preflight checks, and confirm the restore on the destination WordPress site.
-* **Direct Site-to-Site Migration:** Pair two WordPress installations and transfer an archive directly over HTTPS without a separate cloud storage account.
-* **Automatic URL Replacement:** Update site URLs and filesystem paths during migration while preserving PHP-serialized data.
-* **Scheduled WordPress Backups:** Configure daily automated backups with WP-Cron and a rolling backup retention policy.
-* **Chunked Archive Uploads:** Upload larger backup archives in chunks, with resume support if an upload is interrupted.
-* **Preflight and Restore Safeguards:** Check the destination environment, create a safety snapshot, and use staged file replacement and database table swapping during restore.
-* **Migration Security:** Use single-use pairing keys, HMAC-SHA256 request signing, replay protection, SSRF protection, and SHA-256 archive integrity verification for direct transfers.
-* **WordPress Admin Dashboard:** Manage exports, imports, site migration, and scheduled backups from an interface built with WordPress components.
+* Guided wizard with built-in checks before anything is changed
+* No separate cloud account needed for direct site-to-site transfers
+* URLs and paths are fixed for you, even in serialized data
+* Free and open source
+
+**Watch the video tutorial:**
+
+https://www.youtube.com/watch?v=_j4BCOmvWJE
+
+= Features =
+
+* **WordPress Migration:** Move a site to a new host or domain with an export/import archive or a direct site-to-site transfer over HTTPS.
+* **Backup and Export:** Save the database and wp-content files as one .tgz or .zip archive.
+* **Import and Restore:** Upload an archive, review preflight checks, and confirm the restore.
+* **Automatic URL Replacement:** Update URLs and paths during migration, including PHP-serialized data.
+* **Scheduled Backups:** Run daily automatic backups with WP-Cron and rolling retention.
+* **Large Backup Uploads:** Chunked uploads with resume support.
+* **Restore Safeguards:** Safety snapshot, staged file replacement, and database table swapping.
+* **Secure Transfers:** Single-use pairing keys, HMAC-SHA256 signing, replay and SSRF protection, and SHA-256 integrity checks.
 
 = How to Migrate a WordPress Site =
 
-1. Install and activate MigrateLift on the WordPress sites involved in the migration.
-2. Open **Tools > MigrateLift** in the WordPress dashboard.
-3. Use **Export** to download a site archive for manual migration, or choose **Migrate** to begin a direct site-to-site transfer.
-4. For archive migration, use **Import** on the destination site and upload the exported .tgz or .zip file.
-5. Review the destination checks and restore details, then explicitly confirm the restore.
-6. Check the migrated site's pages, links, media, and functionality after the process finishes.
+1. Install and activate MigrateLift on both sites.
+2. Open **Tools > MigrateLift**.
+3. Choose **Export** to download an archive, or **Migrate** for a direct transfer.
+4. On the destination site, use **Import** and upload the archive.
+5. Review the checks, confirm the restore, then test your pages, links, and media.
 
-For recurring backups instead of a site migration, configure the daily backup schedule and retention settings in MigrateLift.
+= Use Cases =
 
-= Common Use Cases =
+* Migrate WordPress to a new host.
+* Move a site to a new domain.
+* Back up and restore a WordPress site.
+* Clone a live site to staging or development.
 
-* Migrate a WordPress website from one web host to another.
-* Move a WordPress site to a different domain with URL replacement.
-* Export a WordPress database and wp-content files for a manual backup.
-* Import a site backup and restore content on another WordPress installation.
-* Clone a live site to a staging or development environment.
-* Schedule daily WordPress backups and manage retained archives.
+= Need a Hand With Your Migration? =
+
+MigrateLift is free to use and every feature works without a paid plan. If you'd rather have a professional handle a complex migration, a large site, or a custom WordPress project, the team behind the plugin offers optional services at [Best Web Expert](https://bestwebexpert.com/). Setup guides are in the [MigrateLift documentation](https://bestwebexpert.com/migrate-lift/).
 
 = Source Code =
 
 The admin screens are built with `@wordpress/scripts`. The source is in the `src` folder of this plugin and at https://github.com/Razibul-Hasan/migrate-lift. To rebuild it, run `npm install` and then `npm run build`.
 
-**Important:** A restore replaces destination site data. Keep a separate verified backup before restoring or migrating a production website. For sites with active orders, bookings, or other frequently changing data, plan the migration carefully to avoid losing new changes.
+**Important:** A restore replaces destination site data. Keep a separate verified backup before restoring or migrating a production site.
 
 == Installation ==
 
-1. Upload the `migrate-lift` plugin folder to `/wp-content/plugins/`, or install the plugin through **Plugins > Add New** in your WordPress dashboard.
-2. Activate **MigrateLift** from the **Plugins** screen.
-3. Open **Tools > MigrateLift**.
-4. Select **Export**, **Import**, or **Migrate** to start a site backup, restore, or migration.
-5. To enable automatic backups, configure the daily schedule and retention policy in the MigrateLift settings.
+1. Upload the `migrate-lift` folder to `/wp-content/plugins/`, or install it from **Plugins > Add New**.
+2. Activate **MigrateLift**.
+3. Open **Tools > MigrateLift** and choose **Export**, **Import**, or **Migrate**.
+4. For automatic backups, set the schedule and retention in the MigrateLift settings.
 
 == Frequently Asked Questions ==
 
-= Can I migrate a WordPress website to a new host or domain? =
+= Can I migrate WordPress to a new host or domain? =
 
-Yes. MigrateLift supports WordPress site migration using an exported archive or direct site-to-site transfer. It can replace site URLs and filesystem paths when restoring data to the destination.
+Yes. Use an exported archive or a direct site-to-site transfer. URLs and file paths are replaced during restore.
 
-= What is included in a WordPress backup or export? =
+= What does a backup include? =
 
-An export includes the WordPress database and wp-content directory. Temporary cache files, existing backup folders, server logs, and other non-essential files are excluded. WordPress core files are not part of the described export.
+The database and the wp-content directory. Cache files, existing backup folders, and logs are excluded. WordPress core files are not included.
 
-= Can I import a backup and restore my WordPress site? =
+= Can I restore a site from a backup? =
 
-Yes. Use the Import tab to upload a compatible .tgz or .zip archive, review the preflight checks, and confirm the restore. Restoration can overwrite existing destination data, so make a separate backup first.
+Yes. Upload a .tgz or .zip archive on the Import tab, review the checks, and confirm. A restore can overwrite existing data, so back up first.
 
-= Does MigrateLift support direct WordPress site-to-site migration? =
+= Does it support direct site-to-site migration? =
 
-Yes. You can pair a source and destination WordPress installation and transfer an archive directly over HTTPS, so both sites need a valid HTTPS address. The transfer uses authenticated pairing and archive integrity checks, and it only sends data to the site you paired with. Keep the migration screen open while it runs. The destination site is not changed until you confirm the restore.
+Yes. Pair two sites and transfer the archive over HTTPS. Both sites need a valid HTTPS address. The destination is not changed until you confirm the restore.
 
-= Does the plugin support automatic URL replacement? =
+= Does it handle serialized data when replacing URLs? =
 
-Yes. The migration and restore process supports URL and filesystem path replacement, including values stored in PHP-serialized data.
+Yes. URL and path replacement is safe for PHP-serialized data.
 
-= Can I schedule automatic WordPress backups? =
+= Can I schedule automatic backups? =
 
-Yes. MigrateLift supports daily scheduled backups through WP-Cron, with configurable rolling retention. WP-Cron execution depends on WordPress cron activity and the hosting environment.
+Yes. Daily backups run through WP-Cron with configurable rolling retention. Timing depends on site traffic and your host.
 
-= Which backup archive formats are supported? =
+= Can I upload large backups? =
 
-MigrateLift supports .tgz (tar.gz) and .zip archives.
+Yes. Uploads are chunked and can resume, but limits still depend on your hosting.
 
-= Can I upload large WordPress backup archives? =
+= Can someone migrate my site for me? =
 
-MigrateLift includes chunked uploading and resume support. Actual upload and processing capacity still depends on the limits and resources of your hosting environment.
+Yes, optionally. The plugin is free and works on its own. If you prefer expert help with a migration, you can contact [Best Web Expert](https://bestwebexpert.com/).
 
-= Does MigrateLift work with WordPress multisite? =
+= Does it work with multisite? =
 
-No. WordPress multisite networks are not currently supported.
+No. WordPress multisite is not currently supported.
 
-= What happens if I deactivate or uninstall MigrateLift? =
+= What happens if I deactivate or uninstall it? =
 
-Deactivating the plugin preserves its backup archives and settings. Deleting the plugin entirely removes its plugin data, including stored backup archives and options. Save any backups you need before deletion.
+Deactivating keeps your backups and settings. Deleting the plugin removes its data, including stored backups, so save any you need first.
 
 == Screenshots ==
 
 1. MigrateLift dashboard with Export, Import, and Migrate options.
-2. WordPress backup export progress with step-by-step status.
-3. Backup import and site restore with URL replacement.
-4. Guided direct WordPress site-to-site migration wizard.
-5. Automated daily backup schedule and retention settings.
+2. Backup export progress.
+3. Import and restore with URL replacement.
+4. Direct site-to-site migration wizard.
+5. Scheduled backup and retention settings.
 
 == Changelog ==
 
+= 1.0.2 =
+* MigrateLift now appears as its own top-level menu in the WordPress admin.
+
+= 1.0.1 =
+* Updated the dashboard icon and header navigation.
+* Added a Hire an Expert link.
+* Fixed the backup drawer starting backups in a loop.
+* Job data is now stored as plain JSON.
+
 = 1.0.0 =
-* Initial public release for the WordPress.org Plugin Directory.
-* WordPress website migration through archive export/import and direct HTTPS site-to-site transfer.
-* WordPress database and wp-content backup and restore with .tgz and .zip support.
-* Secure site pairing, HMAC-SHA256 request signing, replay protection, SSRF protection, and archive integrity verification.
-* Guided migration wizard, preflight checks, restore safeguards, and serialization-safe URL replacement.
-* Daily scheduled backups, rolling retention, chunked archive uploads, and responsive WordPress admin interface.
+* Initial public release.

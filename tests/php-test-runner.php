@@ -1473,6 +1473,36 @@ assert_test( 500 === migrate_lift_next_batch( 400, 1000, 500 ), 'Dump batch neve
 assert_test( 50 === migrate_lift_next_batch( 100, 5 * MB_IN_BYTES, 500 ), 'Dump batch shrinks when rows are large' );
 assert_test( 10 === migrate_lift_next_batch( 10, 5 * MB_IN_BYTES, 500 ), 'Dump batch never drops below the minimum' );
 
+echo "\nTest 41: Manual Backup Cooldown Guard\n";
+require_once dirname( __DIR__ ) . '/includes/rest-api.php';
+// Age every backup completed by earlier tests so they don't count as "just finished".
+foreach ( Migrate_Lift_Job_Engine::list_jobs( array( 'kind' => 'backup', 'limit' => 100 ) )['jobs'] as $old_job ) {
+	$old_job['completed_at'] = 1;
+	Migrate_Lift_Job_Engine::save_job( $old_job );
+}
+assert_test( null === migrate_lift_backup_cooldown_error(), 'No cooldown when no backup finished recently' );
+
+$cd_job = Migrate_Lift_Job_Engine::create_job( 'backup', array() );
+Migrate_Lift_Job_Engine::transition( $cd_job, Migrate_Lift_Job_Engine::STATE_RUNNING );
+Migrate_Lift_Job_Engine::transition( $cd_job, Migrate_Lift_Job_Engine::STATE_COMPLETED );
+$cd_err = migrate_lift_backup_cooldown_error();
+assert_test( is_wp_error( $cd_err ) && 'backup_cooldown' === $cd_err->get_error_code(), 'Refuses a manual backup right after one completed' );
+assert_test( is_wp_error( $cd_err ) && 429 === ( $cd_err->get_error_data()['status'] ?? 0 ), 'Cooldown refusal is HTTP 429' );
+
+add_filter( 'migrate_lift_backup_cooldown_seconds', function () { return 0; } );
+assert_test( null === migrate_lift_backup_cooldown_error(), 'Cooldown can be disabled with the filter' );
+$GLOBALS['wp_mock_filters']['migrate_lift_backup_cooldown_seconds'] = array();
+
+$cd_job = Migrate_Lift_Job_Engine::get_job( $cd_job['id'] );
+$cd_job['completed_at'] = time() - 31;
+Migrate_Lift_Job_Engine::save_job( $cd_job );
+assert_test( null === migrate_lift_backup_cooldown_error(), 'Allows a manual backup once the cooldown has passed' );
+
+$cd_transfer = Migrate_Lift_Job_Engine::create_job( 'direct_transfer', array() );
+Migrate_Lift_Job_Engine::transition( $cd_transfer, Migrate_Lift_Job_Engine::STATE_RUNNING );
+Migrate_Lift_Job_Engine::transition( $cd_transfer, Migrate_Lift_Job_Engine::STATE_COMPLETED );
+assert_test( null === migrate_lift_backup_cooldown_error(), 'A finished migration does not block a backup' );
+
 // Clean up test temporary directory.
 function ml_rmdir_recursive( $dir ) {
 	if ( ! is_dir( $dir ) ) return;
